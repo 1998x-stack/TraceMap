@@ -1122,7 +1122,7 @@ export tests and keep existing heading substrings stable.
 
 ## GT-0024 — Model claims with invalid or out-of-scope anchors survived
 
-**Status:** FIX APPLIED — CI verification pending
+**Status:** RESOLVED — tested in GitHub CI on Ubuntu (not a private-server validation)
 **Class:** Algorithm / Evidence integrity
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1158,7 +1158,7 @@ candidate's assertion is logically entailed by the quote.
 
 ## GT-0025 — Synchronous generation looked frozen
 
-**Status:** FIX APPLIED — CI verification pending
+**Status:** RESOLVED — tested in GitHub CI on Ubuntu (not a private-server validation)
 **Class:** Frontend / Generation UX
 **Severity:** P2
 **First seen:** 2026-11-09
@@ -1186,7 +1186,7 @@ slow request explanation, duplicate-request lock and full cleanup on errors.
 `apps/web/e2e/generation-progress.spec.ts`.
 **Tests:** delayed success, upstream error, LLM-label and 390px layout
 Playwright cases.
-**Verification:** CI pending.
+**Verification:** [CI run #42591405795](https://github.com/1998x-stack/TraceMap/actions/runs/42591405795) completed with 50 Python and 9 Chromium tests passed.
 **Prevention:** do not invent server-side completion percent. A future durable
 job must report real states through polling or authorized events.
 **Limitation:** the current client has no precise backend progress, cancellation

@@ -45,6 +45,10 @@ Now every retained model-proposed node needs a verified anchor **from an explici
 
 This is necessary, but not sufficient, for factual trust: **a quote matching source text does not prove the statement inferred from it**. Human review remains mandatory.
 
+## CI verification
+
+The first integration run [42591405795](https://github.com/1998x-stack/TraceMap/actions/runs/42591405795) passed 50 Python tests, 9 Chromium E2E cases, the strict frontend build, and the Linux lifecycle job. These are reproducible synthetic checks, **not** a deployed SaaS audit or an independent evaluation of real LLM accuracy. A dedicated progress screenshot is captured in the subsequent Chromium iteration.
+
 ## Verification checklist
 
 - [ ] FastAPI/LLM tests: invalid quote, absent quote, same-project unselected source and all-invalid output.

@@ -75,6 +75,8 @@ test('model mode shows model wait without claiming a fabricated percentage',asyn
   await expect(status).toContainText('等待模型响应');
   await expect(status).toContainText('同步请求');
   await expect(status).not.toContainText('50%');
+  // Screenshot is a mocked slow-provider state, not a live model trace.
+  await page.screenshot({path:'test-results/ui-generation-progress.png',fullPage:true});
   await expect(page.getByRole('alert')).toContainText('LLM_UNAVAILABLE');
 });
 

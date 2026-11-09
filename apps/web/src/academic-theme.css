@@ -104,7 +104,7 @@ body { background: var(--scholar-paper); color: var(--scholar-ink); }
 .quota-track span { background: #718e83; }
 .source-item { background: #fffefa; border: 1px solid #e0dbd0; border-radius: 3px; color: #34484d; }
 .source-item:hover,.source-item.selected { background: #f2f4ee; border-color: #879e92; }
-.source-item strong { color: #293a40; }
+.source-item strong { color: #293a40; font-size: 12px; }
 .source-number { border-radius: 2px; color: #6a5645; background: #eee6d9; }
 .source-item small,.source-item-trailing { color: #748184; }
 .empty-sources { background: #f8f5ee; border-color: #d5cbb8; border-radius: 3px; }
@@ -161,7 +161,7 @@ input:focus,textarea:focus { border-color: #748f83; box-shadow: 0 0 0 3px #8aaa9
 .node-kind { color: #687b79; }
 .node-kind-mark { color: #8b7860; }
 .node-origin { color: #89948f; }
-.research-node-title { color: #283b43; font: 600 13px/1.6 Georgia,'Songti SC',serif; }
+.research-node-title { color: #283b43; font: 600 14px/1.65 Georgia,'Songti SC',serif; }
 .research-node-bottom { border-color: #e6e1d6; }
 .node-evidence-state { color: #617773; }
 .node-evidence-state.state-verified { color: #387963; }
@@ -194,7 +194,7 @@ input:focus,textarea:focus { border-color: #748f83; box-shadow: 0 0 0 3px #8aaa9
 .evidence-card:hover:not(:disabled) { border-color: #8ba997; background: #f1f7ee; }
 .evidence-status { color: #627c7c; }
 .evidence-status.is-anchored { color: #367967; }
-.evidence-card strong { color: #253940; font-family: Georgia,'Songti SC',serif; }
+.evidence-card strong { color: #253940; font: 500 13px/1.7 Georgia,'Songti SC',serif; }
 .evidence-card small,.evidence-card small span,.ai-heading>span { color: #69827c; }
 .patch-buttons button span { color: #53796b; }
 .source-readonly,.anchor-status { color: #52786e; }
