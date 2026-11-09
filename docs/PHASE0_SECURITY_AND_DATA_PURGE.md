@@ -1,6 +1,6 @@
 # TraceMap Phase 0 — Security Boundary & Data Protection
 
-**Status:** Implementation is in PR #9. Do not mark this gate complete until the PR CI checks are green and the deployment operator confirms the live host configuration.
+**Status:** Code and CI verification PASS in [GitHub Actions run 42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716). Live Linux host listener/configuration inspection is NOT RUN and remains an operator deployment check.
 
 ## Scope
 
@@ -18,10 +18,10 @@ The development middleware now requires all of the following:
 
 - TCP peer is loopback.
 - Host is one of localhost, 127.0.0.1, ::1 or the test-only TestClient host.
-- No common proxy/client-IP forwarding headers are present: Forwarded, X-Forwarded-*, X-Real-IP, X-Original-Forwarded-For, X-Client-IP, True-Client-IP or CF-Connecting-IP.
+- No common proxy/client-IP forwarding headers are present: Forwarded, X-Forwarded-*, X-Real-IP, X-Original-*, Via, X-Envoy-External-Address, X-Cluster-Client-IP, X-Client-IP, True-Client-IP or CF-Connecting-IP.
 - TRACEMAP_ENV remains exactly development.
 
-The launcher independently binds API and Vite to 127.0.0.1 and refuses public bind overrides.
+The launcher independently binds API and Vite to 127.0.0.1 and refuses public bind overrides. It also rejects a PID-reuse race only as successful shutdown when the expected listener is already free; if the port remains occupied or unknown, it fails closed.
 
 **Hard limitation:** middleware cannot distinguish a same-host proxy that strips all forwarding headers and rewrites Host to localhost. Never put this dev API behind Nginx, Caddy or another reverse proxy. Use SSH tunneling for remote development. Bearer dev-* is an impersonable development identity, not authentication.
 
@@ -80,4 +80,4 @@ The child applies POSIX RLIMIT_CPU and RLIMIT_AS, returns only extracted page te
 - Existing Python API, Linux deployment lifecycle, web build and Chromium E2E checks remain required.
 - Live Linux deployment must still be inspected for listeners: API and Vite must bind only to 127.0.0.1. Middleware is not a substitute for host firewall/process configuration.
 
-Unrun checks must be marked NOT RUN. A green CI run does not prove backup erasure or production security.
+## 5. Verified CI evidence (2026-11-09)\n\n- Python API: **62 passed**, 1 dependency deprecation warning.\n- Web build: PASS.\n- Chromium browser E2E: **12 passed**.\n- Linux deployment lifecycle: live smoke **31 passed**, isolated restart/persistence cycles **8 passed** each; no failures or skips.\n- The CI environment is not the user's Linux host. Actual listener inspection, firewall rules and backup/WAL retention on that host are **NOT RUN**.\n\nA green CI run does not prove backup erasure or production security.

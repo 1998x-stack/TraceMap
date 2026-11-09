@@ -420,6 +420,8 @@ def test_local_dev_api_rejects_forwarded_proxy_headers_and_nonlocal_host(tmp_pat
                 ("X-Real-IP", "203.0.113.7"),
                 ("X-Forwarded-Host", "tracemap.example"),
                 ("CF-Connecting-IP", "203.0.113.7"),
+                ("Via", "1.1 internal-proxy"),
+                ("X-Envoy-External-Address", "203.0.113.7"),
             ]:
                 response = local.get("/health", headers={name: value})
                 assert response.status_code == 403, (name, response.text)

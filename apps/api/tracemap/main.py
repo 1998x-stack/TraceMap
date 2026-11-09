@@ -211,8 +211,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
         proxy_headers = {
             "forwarded", "x-forwarded-for", "x-forwarded-host",
             "x-forwarded-proto", "x-forwarded-port", "x-real-ip",
-            "x-original-forwarded-for", "x-client-ip", "true-client-ip",
-            "cf-connecting-ip",
+            "x-original-forwarded-for", "x-original-host", "x-original-proto",
+            "x-client-ip", "true-client-ip", "cf-connecting-ip", "via",
+            "x-envoy-external-address", "x-cluster-client-ip",
+            "x-forwarded-client-cert", "x-forwarded-ssl",
         }
         if any(name in request.headers for name in proxy_headers):
             return JSONResponse(status_code=403, content={"error": {
