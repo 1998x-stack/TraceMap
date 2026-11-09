@@ -5,7 +5,7 @@ Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work;
 | Gate | Scope | Evidence / stage |
 | --- | --- | --- |
 | G0 — structure + contracts | Monorepo structure, ADR, dev README, CI, deterministic validators | [CI PASS](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626): 14 Python tests, strict frontend build and 1 Chromium E2E |
-| P0 — prototype safety | Local-only API boundary; source logical purge; legacy residue sweep; resource-limited PDF child process | **PASS in CI** (run 42606956716); live Linux host inspection NOT RUN |
+| P0 — prototype safety | Local-only API boundary; source logical purge; legacy residue sweep; resource-limited PDF child process | **PASS in CI** (run 42607754977); live Linux host inspection NOT RUN |
 | G1 — sources | Project CRUD; dev-only identity isolation; SQLite persistence; inline text/MD/PDF; stable paragraph anchors; quotas | Process/resource-limited PDF parser is implemented; dedicated unprivileged sandbox, managed auth and private object storage remain open (PARTIAL) |
 | G2 — map | React Flow canvas; manual add/rename/delete/verify; revision control; idempotency; rollback; JSON/MD export | Local API tests; frontend build via CI; move/reorder UI and full history screen pending (PARTIAL) |
 | G3 — LLM generation | Provider adapter; cost budget; untrusted document handling; schema validation; durable generation jobs | NOT STARTED — extractive demonstration draft only, clearly labelled |
@@ -35,7 +35,7 @@ Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work;
 ## Phase 0 verification (2026-11-09)
 
 - [PR #9](https://github.com/1998x-stack/TraceMap/pull/9) implements the local API guard, transactional source purge, startup cleanup of legacy missing-source references, and resource-limited PDF child process.
-- [CI run 42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716): Python **62 passed**, web build PASS, Chromium **12 passed**, deployment lifecycle smoke/restart checks PASS (31 + 8 + 8).
+- [CI run 42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977): Python **62 passed**, web build PASS, Chromium **12 passed**, deployment lifecycle smoke/restart checks PASS (31 + 8 + 8).
 - **NOT RUN:** actual user Linux host listener/firewall inspection and forensic backup/WAL erasure verification. Phase 0 code/CI is complete; host confirmation remains a deployment checklist item.
 
 ## Next engineering changes in priority order

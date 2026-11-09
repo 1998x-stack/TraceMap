@@ -1,6 +1,6 @@
 # TraceMap Phase 0 — Security Boundary & Data Protection
 
-**Status:** Code and CI verification PASS in [GitHub Actions run 42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716). Live Linux host listener/configuration inspection is NOT RUN and remains an operator deployment check.
+**Status:** Code and CI verification PASS in [GitHub Actions run 42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977). Live Linux host listener/configuration inspection is NOT RUN and remains an operator deployment check.
 
 ## Scope
 

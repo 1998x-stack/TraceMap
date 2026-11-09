@@ -55,7 +55,7 @@ python scripts/benchmark_domain.py
 
 ## 6. Phase 0 verification (2026-11-09)
 
-GitHub Actions [run 42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) on the Phase 0 PR head:
+GitHub Actions [run 42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) on the Phase 0 PR head:
 
 | Job | Result |
 |---|---|

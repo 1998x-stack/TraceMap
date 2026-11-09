@@ -1305,7 +1305,7 @@ source scope. A token retry is bounded but can increase request cost.
 
 ## GT-0028 — Source delete left derived evidence in live records
 
-**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
 **Class:** Data lifecycle / privacy
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1351,7 +1351,7 @@ same purge transaction or have an explicit retention contract.
 
 ## GT-0029 — PDF extraction ran inside the API process
 
-**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
 **Class:** Upload handling / availability
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1383,7 +1383,7 @@ limits, and never move PdfReader extraction back into the API request process.
 
 ## GT-0030 — Dev API trusted loopback proxy metadata
 
-**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
 **Class:** Development security boundary
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1418,7 +1418,7 @@ security review.
 
 ## GT-0031 — dev-stop mistook PID reuse for a live service
 
-**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
 **Class:** Local deployment lifecycle / reliability
 **Severity:** P1
 **First seen:** 2026-11-09
