@@ -16,7 +16,10 @@ COMMON = ROOT / "scripts" / "dev-common.sh"
 
 
 def run(command: list[str], **overrides: str) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
+    # Hermetic: drop any inherited TRACEMAP_* variable so a developer who has
+    # exported (e.g.) TRACEMAP_API_PORT cannot change what the contract tests
+    # assert. Each test opts in to exactly the variables it needs. See GT-0018.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("TRACEMAP_")}
     env.update(overrides)
     return subprocess.run(command, cwd=ROOT, env=env, text=True,
                           capture_output=True, timeout=20)
@@ -32,7 +35,7 @@ class DeploymentSafetyTests(unittest.TestCase):
                 ({"TRACEMAP_API_PORT": "8000; touch /tmp/bad"}, "Invalid port"),
                 ({"TRACEMAP_API_PORT": "0"}, "Port out of range"),
                 ({"TRACEMAP_WEB_PORT": "70000"}, "Port out of range"),
-                ({"TRACEMAP_WEB_PORT": "8000"}, "must differ"),
+                ({"TRACEMAP_API_PORT": "8000", "TRACEMAP_WEB_PORT": "8000"}, "must differ"),
                 ({"TRACEMAP_DATABASE_URL": "sqlite:///./wrong.db"}, "absolute SQLite URL"),
             ]
             for changes, message in matrix:
@@ -88,6 +91,23 @@ class DeploymentSafetyTests(unittest.TestCase):
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+    def test_safety_harness_ignores_ambient_tracemap_environment(self):
+        # GT-0018: exporting TRACEMAP_API_PORT/WEB_PORT/RUNTIME_DIR in the shell
+        # must not change the outcome of these contract tests.
+        previous = os.environ.get("TRACEMAP_API_PORT")
+        os.environ["TRACEMAP_API_PORT"] = "59999"
+        try:
+            inherited = run(["bash", "-c", 'printf %s "${TRACEMAP_API_PORT:-unset}"'])
+            self.assertEqual(inherited.stdout, "unset", "ambient TRACEMAP_* leaked into the child")
+            explicit = run(["bash", "-c", 'printf %s "${TRACEMAP_API_PORT:-unset}"'],
+                           TRACEMAP_API_PORT="59998")
+            self.assertEqual(explicit.stdout, "59998", "explicit override was not applied")
+        finally:
+            if previous is None:
+                os.environ.pop("TRACEMAP_API_PORT", None)
+            else:
+                os.environ["TRACEMAP_API_PORT"] = previous
 
     def test_stop_refuses_to_kill_foreign_process(self):
         if not shutil.which("ss") or not shutil.which("flock"):
