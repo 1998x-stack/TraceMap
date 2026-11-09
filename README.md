@@ -2,7 +2,7 @@
 
 **Evidence-first AI research maps** · 证据可追溯的思维导图工作台
 
-> **Engineering prototype v0.2 UI iteration — LOCAL DEVELOPMENT ONLY.** The code here is not a production SaaS, does **not** call an LLM, and must not be published as an authenticated service. AI generation is an explicitly labelled deterministic extractive demo.
+> **Engineering prototype v0.2 UI iteration — LOCAL DEVELOPMENT ONLY.** The code here is not a production SaaS and must not be published as an authenticated service. Generation is a deterministic extractive demo by default; an **optional** OpenAI-compatible LLM provider (off by default) can be enabled locally — see [LLM provider](docs/LLM_PROVIDER.md).
 
 **Product specification:** [PRD](https://github.com/1998x-stack/projects/blob/main/projects/knowledge/llm-xmind/reports/prd-mvp-v1.0.md) · [Architecture](https://github.com/1998x-stack/projects/tree/main/projects/knowledge/llm-xmind/design) · [Live test plan](docs/IMPLEMENTATION_PLAN.md).
 
@@ -91,7 +91,8 @@ Run `python scripts/benchmark_domain.py` for the deterministic **lexical-only** 
 | --- | --- |
 | Core domain + API unit/integration tests | **27 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42567240816) |
 | React Flow interface | **Build passed; Chromium E2E 3 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42567240816) |
-| Real LLM generation and rich AI Patch | **Not implemented**; extractive/rule demo only |
+| Real LLM generation | **Optional, off by default** — OpenAI-compatible provider wired with server-side evidence grounding ([docs/LLM_PROVIDER.md](docs/LLM_PROVIDER.md)); extractive demo remains the default |
+| Rich AI Patch | **Not implemented**; rule-based question proposals only |
 | External authentication + privacy controls | **Not implemented**; production blocked |
 | Isolated job worker + PostgreSQL + S3 | **Not implemented** |
 | Production release / real Xmind import testing | **Not implemented** |

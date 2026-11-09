@@ -27,6 +27,8 @@
 | Test commands broke when run outside repository root | [GT-0017](#gt-0017--relative-commands-and-unscoped-tmp-cleanup) |
 | Safety tests fail only when `TRACEMAP_*` is exported in the shell | [GT-0018](#gt-0018--safety-tests-depended-on-ambient-tracemap-variables) |
 | `crypto.randomUUID is not a function` (LAN / plain-HTTP origin) | [GT-0021](#gt-0021--cryptorandomuuid-is-not-a-function-on-a-plain-http-lan-origin) |
+| `502 LLM_INVALID_OUTPUT` intermittently from `/generate` | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) |
+| Markdown export hides node type / notes / verification | [GT-0023](#gt-0023--markdown-export-does-not-convey-node-type-notes-or-verification) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
 | HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
 | Test suite is slow (~40 s) | [GT-0011](#gt-0011--sqlite-ddlfsync-is-slow-on-this-host) |
@@ -59,6 +61,9 @@ Verified commits:
 | `784511c` | Private runtime permissions and gotchas record (verified baseline for this review). |
 | `1182bc1`, `771b3f4`, `52bfd20` | Independent Linux review: hermetic safety tests, storage-error contract, PDF coverage (GT-0018–GT-0020). |
 | `ebbec19` | LAN/plain-HTTP origin support: UUID fallback (GT-0021). |
+| `d2ba874` | Centralize configuration in `.env` / `.env.example`. |
+| `7efe4fd` | Optional grounded LLM provider (GT-0022). |
+| `8c6d7aa` | UI reflects the active generation provider. |
 
 ## 3. Most common errors (index)
 
@@ -86,6 +91,7 @@ Verified commits:
 | GT-0019 | Deployment guide left the shell in `apps/web` | Documentation | P2 |
 | GT-0020 | Locked SQLite returned an opaque non-JSON 500 | Backend/Reliability | P2 |
 | GT-0021 | `crypto.randomUUID` missing on a plain-HTTP LAN origin | Frontend/Deployment | P1 |
+| GT-0022 | Reasoning-model truncation broke LLM output | Backend/LLM | P2 |
 
 ## 5. Open issues / roadmap
 
@@ -96,6 +102,7 @@ Verified commits:
 | GT-0009 | Swagger UI assets load from a CDN | Frontend/Docs | P3 | Cosmetic; affects offline `/docs` only |
 | GT-0011 | SQLite DDL/fsync is slow on this host | Environment | P3 | Host disk characteristic; not application code |
 | GT-0017 | Relative commands and unscoped /tmp cleanup | Documentation | P2 | Guide corrected; independent cold-start now performed by this review (see GT-0019) |
+| GT-0023 | Markdown export hides node type, notes and verification | Export/Frontend | P3 | Needs a format decision (Xmind-clean headings vs richer labels) |
 
 ## 5.1 Deployment review follow-up (PR #6)
 
@@ -1011,3 +1018,100 @@ becomes moot, but the fallback stays harmless. Any future `crypto.subtle` usage
 would have the same secure-context constraint — plan to terminate TLS for LAN use.
 
 **Links:** commit `ebbec19`.
+
+## GT-0022 — Reasoning-model truncation broke LLM generation intermittently
+
+**Status:** RESOLVED
+**Class:** Backend / LLM provider
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** `iagent/standard` (OpenAI-compatible reasoning model), `.env`
+`TRACEMAP_GENERATION_MODE=llm`, first real end-to-end generate call.
+
+**Symptoms:** `POST /api/v1/projects/{pid}/generate` intermittently returned
+`502 LLM_INVALID_OUTPUT · 模型输出不是合法 JSON` after ~40 s, while other calls
+succeeded. The draft was never created.
+
+**Minimal reproduction:**
+```bash
+# repeat a real generate; roughly 1 in 3 attempts hit max_tokens
+for i in 1 2 3; do curl -sS -X POST .../generate -H 'Authorization: Bearer dev-<name>' \
+  -H 'If-Match: "rev-1"' -H 'Idempotency-Key: gt22-'$i'00' -d '{...}'; echo; done
+```
+
+**Expected:** a deterministic success, or a clear, diagnosable failure.
+
+**Actual:** the model spent the entire `max_tokens` (4096) budget on *hidden
+reasoning* (`finish_reason=length`), so the JSON object was cut off mid-string:
+`Unterminated string starting at ... char 838`. The adapter reported it as a
+generic "not valid JSON", hiding the real cause.
+
+**Root cause:** `apps/api/tracemap/llm.py::_chat` ignored `finish_reason` and
+defaulted `max_tokens` to 4096 — too small for a reasoning model. Measured:
+attempt 1 `finish=length len=848` (fail), attempts 2–3 `finish=stop` (ok).
+
+**Fix:** detect `finish_reason == "length"` and raise `LLM_OUTPUT_TRUNCATED`
+(502, retryable) instead of a misleading parse error; retry once automatically
+(in `draft_from_llm`); raise the default budget to `TRACEMAP_LLM_MAX_TOKENS=8192`.
+
+**Files:** `apps/api/tracemap/llm.py`; `.env` / `.env.example`.
+
+**Related tests:** `test_chat_detects_truncated_output`,
+`test_draft_from_llm_retries_truncation`.
+
+**Verification:** after the fix a real generate succeeded (~33 s, 10 nodes,
+**0** dropped anchors, 4646 tokens) and the regression tests pass
+(`python -m pytest -q apps/api/tests/test_llm.py` → 9 passed).
+
+**Prevention:** always inspect `finish_reason`; keep a generous output budget for
+reasoning models; retry once before surfacing an error.
+
+**Links:** `docs/LLM_PROVIDER.md`; commit `7efe4fd`.
+
+---
+
+## GT-0023 — Markdown export does not convey node type, notes or verification
+
+**Status:** OPEN (product decision required)
+**Class:** Export / Frontend
+**Severity:** P3
+**First seen:** 2026-11-09
+**Environment:** reviewed on a real LLM draft committed to the map.
+
+**Symptoms:** in `GET /export?format=md`, every non-topic node renders as an
+identical `###` heading. A `counterpoint`, a `question`, an `evidence` node and a
+`claim` are indistinguishable, node `note` text is absent, and a node's
+`verified_by_user` state is not shown anywhere in the file.
+
+**Minimal reproduction:**
+```bash
+curl -sS "$B/api/v1/projects/$PID/export?format=md" -H "$AUTH"
+# headings are all "### <title>"; only the evidence appendix carries anchorStatus
+```
+
+**Expected (arguably):** a reader of the export can tell node types and which
+nodes a human verified.
+
+**Actual:** `core.markdown_export` emits heading levels for hierarchy plus an
+evidence appendix (source title · paragraph id prefix · `anchorStatus` ·
+verbatim quote). This keeps headings clean for Xmind Markdown import — a
+deliberate trade-off — but loses type/verification/note.
+
+**Root cause:** by design in `core.markdown_export`; the format targets Xmind
+compatibility rather than full-fidelity round-trip.
+
+**Fix:** none yet. Options: (a) append a compact `— [type · verification]` suffix
+in the appendix lines only; (b) add an opt-in `format=md-full`; (c) leave as is.
+Changing headings risks polluting Xmind node text.
+
+**Files:** `apps/api/tracemap/core.py` (`markdown_export`).
+
+**Related tests:** `apps/api/tests/test_core.py::test_degrade_deleted_source_and_export`,
+`apps/api/tests/test_api.py::test_export_md_and_json`, `scripts/smoke-test.sh` md check.
+
+**Verification:** sample export reviewed (PR #6 comment). Not a regression.
+
+**Prevention / next step:** decide the format; if labels are added, extend the
+export tests and keep existing heading substrings stable.
+
+**Links:** PR #6; `docs/LLM_PROVIDER.md`.

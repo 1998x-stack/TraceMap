@@ -13,8 +13,11 @@ review → manual edits → Markdown/JSON export.
 This is an **engineering prototype / local development tool**, not a product:
 
 - Authentication is a fake `Authorization: Bearer dev-<name>` identity.
-- There is **no LLM**; "generation" is a labelled lexical extraction demo
-  (`generationMode: extractive_demo`).
+- Generation is the deterministic lexical demo by default (`generationMode:
+  extractive_demo`, offline, no key). An **optional real LLM provider** exists but
+  is **off by default**; enable it with `TRACEMAP_GENERATION_MODE=llm` in `.env`
+  (see [`docs/LLM_PROVIDER.md`](docs/LLM_PROVIDER.md)). Its output is a grounded
+  *candidate* draft that a human must commit; it never sets `verified_by_user`.
 - Storage is SQLite; parsing is synchronous; there is no isolated worker,
   no PostgreSQL, no object storage.
 - The API **refuses to start** unless `TRACEMAP_ENV=development` and also
@@ -70,6 +73,8 @@ Prevention, Links). Keep resolved entries forever; mark unverified guesses
 ## 6. Destructive / forbidden actions — do not run without explicit approval
 
 - `sudo` / `apt` / firewall changes / binding to `0.0.0.0` / reverse proxies.
+- Committing `.env` (real secrets) or any file under `.env.*` except
+  `.env.example`; pasting keys into code, docs or logs.
 - Deleting or overwriting an existing `*.db` (including `tracemap-dev.db`) or
   anything under `$TRACEMAP_RUNTIME_DIR`.
 - `git push --force`, rewriting history, or committing to `main` directly.
@@ -82,10 +87,11 @@ Prevention, Links). Keep resolved entries forever; mark unverified guesses
 
 ## 7. Which features are NOT implemented (do not imply otherwise)
 
-Real LLM generation and rich AI patches; external auth / sessions / multi-tenant
-security; PostgreSQL + migrations; isolated async job worker; private object
-storage; full deletion governance; native Xmind import/export; any production
-deployment.
+Rich AI Patch operations (only a rule-based demo exists); external auth / sessions
+/ multi-tenant security; PostgreSQL + migrations; isolated async job worker;
+private object storage; full deletion governance; native Xmind import/export; any
+production deployment. The optional LLM provider is prototype-grade: no cost cap,
+synchronous, no durable jobs, no accuracy evaluation (see `docs/LLM_PROVIDER.md`).
 
 ## 8. Shortest path from zero
 
