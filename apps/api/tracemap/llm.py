@@ -571,9 +571,16 @@ def draft_from_llm(goal: str, documents: list[dict], paragraphs: dict, source_ti
                 raise
             last_error = exc
             if attempt == 0:
-                if (exc.code == "LLM_OUTPUT_TRUNCATED"
-                        and current_max_tokens < retry_max_tokens):
-                    current_max_tokens = min(retry_max_tokens, current_max_tokens * 2)
+                if exc.code == "LLM_OUTPUT_TRUNCATED":
+                    if current_max_tokens < retry_max_tokens:
+                        current_max_tokens = min(retry_max_tokens, current_max_tokens * 2)
+                        continue
+                    raise LLMError(
+                        "LLM_OUTPUT_TRUNCATED",
+                        f"模型输出仍被截断（本次已达到 {current_max_tokens} tokens）。"
+                        "请检查模型上下文上限，或提高 TRACEMAP_LLM_RETRY_MAX_TOKENS / 缩短资料范围。",
+                        502,
+                    ) from None
                 continue
             if exc.code == "LLM_OUTPUT_TRUNCATED":
                 raise LLMError(

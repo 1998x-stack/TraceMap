@@ -391,7 +391,7 @@ def test_select_relevant_paragraphs_never_exceeds_token_budget():
     selected, metadata = llm.select_relevant_paragraphs(
         "研究目标", documents, input_token_budget=2048
     )
-    assert metadata["estimatedInputTokens"] <= 512
+    assert metadata["estimatedInputTokens"] <= 2048
     assert metadata["selectedParagraphCount"] == sum(
         len(document["paragraphs"]) for document in selected
     )
