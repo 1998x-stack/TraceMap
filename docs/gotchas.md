@@ -1297,7 +1297,7 @@ source scope. A token retry is bounded but can increase request cost.
 
 ## GT-0028 — LLM prompt boundaries and retrieval budget were not robust
 
-**Status:** RESOLVED — CI PASS (2026-11-09; run 42606215058)
+**Status:** RESOLVED — CI PASS (2026-11-09; run 42606702246)
 **Class:** Backend / LLM reliability / Evidence integrity
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1325,7 +1325,7 @@ rank with CJK bigrams and Latin words; select round-robin across sources within
 `TRACEMAP_LLM_INPUT_TOKEN_BUDGET`; restrict anchor verification to paragraphs
 actually included in the prompt; record retrieval and coverage metadata in Draft.
 
-**Verification:** CI run 42606215058 passed: Python API 69 passed; Chromium E2E
+**Verification:** CI run 42606702246 passed: Python API 70 passed; Chromium E2E
 12 passed; web build and deployment-lifecycle checks passed. The synthetic
 retrieval and prompt-serialization tests are deterministic. Live provider
 integration and live-model prompt-injection resistance: NOT RUN. No factual
@@ -1335,7 +1335,7 @@ accuracy claim is made.
 
 ## GT-0029 — Malformed LLM JSON roots and provider bodies could cause crashes or memory pressure
 
-**Status:** RESOLVED — CI PASS (2026-11-09; run 42606215058)
+**Status:** RESOLVED — CI PASS (2026-11-09; run 42606702246)
 **Class:** Backend / LLM reliability
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1344,7 +1344,8 @@ accuracy claim is made.
 **Symptoms:** `extract_json_object` accepted JSON arrays, null and scalar roots,
 although downstream code expected an object. A non-string node `type` such as
 `[]` raised `TypeError: unhashable type` during set membership. The provider
-response was read without a byte limit.
+response was read without a byte limit. Deeply nested JSON could also raise an
+uncaught RecursionError in the parser.
 
 **Minimal reproduction:** regression tests
 `test_extract_json_object_rejects_non_object_roots`,
@@ -1353,14 +1354,15 @@ response was read without a byte limit.
 
 **Expected:** require object roots and a valid nodes array; type-check every
 candidate field before set membership or evidence resolution; cap upstream bodies
-before parsing; return stable LLM errors without echoing provider data or secrets.
+before parsing; catch JSON recursion-depth failures; return stable LLM errors
+without echoing provider data or secrets.
 
 **Fix:** strict object-root and nodes-array validation; fail-closed node field
 validation; a 2 MiB response read limit; explicit `LLM_RESPONSE_TOO_LARGE` and
 `LLM_INPUT_TOO_LARGE` error codes; retry invalid model output once and account
 for usage returned by failed attempts.
 
-**Verification:** CI run 42606215058 passed: Python API 69 passed; Chromium E2E
+**Verification:** CI run 42606702246 passed: Python API 70 passed; Chromium E2E
 12 passed; web build and deployment-lifecycle checks passed. No real provider
 call is claimed; live provider integration: NOT RUN.
 

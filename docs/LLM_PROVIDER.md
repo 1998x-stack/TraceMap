@@ -160,8 +160,8 @@ or prompt-injection success rate is claimed.
 
 ## Phase 1 verification record
 
-Verified on GitHub Actions run 42606215058 (2026-11-09):
-- Python API suite: 69 passed, 1 existing deprecation warning.
+Verified on GitHub Actions run 42606702246 (2026-11-09):
+- Python API suite: 70 passed, 1 existing deprecation warning.
 - Chromium browser E2E: 12 passed.
 - Deployment lifecycle: passed; the lifecycle log reported 31 checks passed and
   the smoke run reported 8 passed, 0 failed, 0 skipped.
