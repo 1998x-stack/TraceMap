@@ -5,7 +5,8 @@ Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work;
 | Gate | Scope | Evidence / stage |
 | --- | --- | --- |
 | G0 — structure + contracts | Monorepo structure, ADR, dev README, CI, deterministic validators | [CI PASS](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626): 14 Python tests, strict frontend build and 1 Chromium E2E |
-| P0 — prototype safety | Local-only API boundary; source logical purge; legacy residue sweep; resource-limited PDF child process | **PASS in CI** (run 42606956716); live Linux host inspection NOT RUN |\n| G1 — sources | Project CRUD; dev-only identity isolation; SQLite persistence; inline text/MD/PDF; stable paragraph anchors; quotas | Process/resource-limited PDF parser is implemented; dedicated unprivileged sandbox, managed auth and private object storage remain open (PARTIAL) |
+| P0 — prototype safety | Local-only API boundary; source logical purge; legacy residue sweep; resource-limited PDF child process | **PASS in CI** (run 42606956716); live Linux host inspection NOT RUN |
+| G1 — sources | Project CRUD; dev-only identity isolation; SQLite persistence; inline text/MD/PDF; stable paragraph anchors; quotas | Process/resource-limited PDF parser is implemented; dedicated unprivileged sandbox, managed auth and private object storage remain open (PARTIAL) |
 | G2 — map | React Flow canvas; manual add/rename/delete/verify; revision control; idempotency; rollback; JSON/MD export | Local API tests; frontend build via CI; move/reorder UI and full history screen pending (PARTIAL) |
 | G3 — LLM generation | Provider adapter; cost budget; untrusted document handling; schema validation; durable generation jobs | NOT STARTED — extractive demonstration draft only, clearly labelled |
 | G4 — AI Patch | Real LLM operations; per-op Diff dependencies; TTL; protected edits; 409; atomic apply | PARTIAL — rule-based question proposals with opt-in apply; no LLM or real condense |
@@ -29,7 +30,13 @@ Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work;
 ## Hardening update v0.3 (2026-11-09)
 
 - [Algorithm](ALGORITHM_OPTIMIZATION_V0.3.md) + [Backend](BACKEND_OPTIMIZATION_V0.3.md) + [verification](VERIFICATION_V0.3.md): malformed JSON 500 regression tests, sub-tree AI scope validation, source-add/delete revision audit, verified-claim invalidation, lexical source-balanced paragraph ranking and synthetic performance benchmark.
-- This is an incremental G0/G1/G2 **development hardening pass**, not full G1 (managed authentication, private object storage and dedicated sandbox), G2 (PostgreSQL/durable jobs) or G3/G4 (true LLM) completion.\n\n## Phase 0 verification (2026-11-09)\n\n- [PR #9](https://github.com/1998x-stack/TraceMap/pull/9) implements the local API guard, transactional source purge, startup cleanup of legacy missing-source references, and resource-limited PDF child process.\n- [CI run 42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716): Python **62 passed**, web build PASS, Chromium **12 passed**, deployment lifecycle smoke/restart checks PASS (31 + 8 + 8).\n- **NOT RUN:** actual user Linux host listener/firewall inspection and forensic backup/WAL erasure verification. Phase 0 code/CI is complete; host confirmation remains a deployment checklist item.
+- This is an incremental G0/G1/G2 **development hardening pass**, not full G1 (managed authentication, private object storage and dedicated sandbox), G2 (PostgreSQL/durable jobs) or G3/G4 (true LLM) completion.
+
+## Phase 0 verification (2026-11-09)
+
+- [PR #9](https://github.com/1998x-stack/TraceMap/pull/9) implements the local API guard, transactional source purge, startup cleanup of legacy missing-source references, and resource-limited PDF child process.
+- [CI run 42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716): Python **62 passed**, web build PASS, Chromium **12 passed**, deployment lifecycle smoke/restart checks PASS (31 + 8 + 8).
+- **NOT RUN:** actual user Linux host listener/firewall inspection and forensic backup/WAL erasure verification. Phase 0 code/CI is complete; host confirmation remains a deployment checklist item.
 
 ## Next engineering changes in priority order
 

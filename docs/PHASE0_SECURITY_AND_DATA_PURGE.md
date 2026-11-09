@@ -80,4 +80,12 @@ The child applies POSIX RLIMIT_CPU and RLIMIT_AS, returns only extracted page te
 - Existing Python API, Linux deployment lifecycle, web build and Chromium E2E checks remain required.
 - Live Linux deployment must still be inspected for listeners: API and Vite must bind only to 127.0.0.1. Middleware is not a substitute for host firewall/process configuration.
 
-## 5. Verified CI evidence (2026-11-09)\n\n- Python API: **62 passed**, 1 dependency deprecation warning.\n- Web build: PASS.\n- Chromium browser E2E: **12 passed**.\n- Linux deployment lifecycle: live smoke **31 passed**, isolated restart/persistence cycles **8 passed** each; no failures or skips.\n- The CI environment is not the user's Linux host. Actual listener inspection, firewall rules and backup/WAL retention on that host are **NOT RUN**.\n\nA green CI run does not prove backup erasure or production security.
+## 5. Verified CI evidence (2026-11-09)
+
+- Python API: **62 passed**, 1 dependency deprecation warning.
+- Web build: PASS.
+- Chromium browser E2E: **12 passed**.
+- Linux deployment lifecycle: live smoke **31 passed**, isolated restart/persistence cycles **8 passed** each; no failures or skips.
+- The CI environment is not the user's Linux host. Actual listener inspection, firewall rules and backup/WAL retention on that host are **NOT RUN**.
+
+A green CI run does not prove backup erasure or production security.

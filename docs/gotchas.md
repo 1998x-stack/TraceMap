@@ -31,7 +31,11 @@
 | LLM output still truncated after automatic retry | [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
 | LLM candidate has no valid evidence, but still appears in the map | [GT-0024](#gt-0024--model-claims-with-invalid-or-out-of-scope-anchors-survived) |
 | Candidate generation takes tens of seconds with no visible explanation | [GT-0025](#gt-0025--synchronous-generation-looked-frozen) |
-| `502 LLM_OUTPUT_TRUNCATED` after retry, or malformed model JSON | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) and [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |\n| Source deleted but quote remains in a map, draft or historical snapshot | [GT-0028](#gt-0028--source-delete-left-derived-evidence-in-live-records) |\n| PDF upload blocks API or consumes unbounded parser resources | [GT-0029](#gt-0029--pdf-extraction-ran-inside-the-api-process) |\n| Local API accepts forwarded headers or an external Host | [GT-0030](#gt-0030--dev-api-trusted-loopback-proxy-metadata) |\n| dev-stop reports failure after the service port is released but the PID is reused | [GT-0031](#gt-0031--dev-stop-mistook-pid-reuse-for-a-live-service) |
+| `502 LLM_OUTPUT_TRUNCATED` after retry, or malformed model JSON | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) and [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
+| Source deleted but quote remains in a map, draft or historical snapshot | [GT-0028](#gt-0028--source-delete-left-derived-evidence-in-live-records) |
+| PDF upload blocks API or consumes unbounded parser resources | [GT-0029](#gt-0029--pdf-extraction-ran-inside-the-api-process) |
+| Local API accepts forwarded headers or an external Host | [GT-0030](#gt-0030--dev-api-trusted-loopback-proxy-metadata) |
+| dev-stop reports failure after the service port is released but the PID is reused | [GT-0031](#gt-0031--dev-stop-mistook-pid-reuse-for-a-live-service) |
 | Markdown export hides node type / notes / verification | [GT-0023](#gt-0023--markdown-export-does-not-convey-node-type-notes-or-verification) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
 | HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
@@ -368,7 +372,8 @@ and passes 3/3 while `scripts/dev-start.sh` keeps running on 8000/5173.
 
 **Minimal reproduction:**
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+curl -s -o /dev/null -w '%{http_code}
+' -X POST \
   "http://127.0.0.1:8000/api/v1/projects/<pid>/nodes/ops" \
   -H 'Authorization: Bearer dev-<name>' -H 'Content-Type: application/json' \
   -H 'If-Match: "rev-999999999999999999999"' -H 'Idempotency-Key: bigrev-0001' \
@@ -934,7 +939,8 @@ No database internals were leaked.
 **Minimal reproduction:** start the API on a file database, hold an exclusive
 write lock, then:
 ```bash
-curl -s -o body.txt -w '%{http_code}\n' -X POST \
+curl -s -o body.txt -w '%{http_code}
+' -X POST \
   "http://127.0.0.1:8207/api/v1/projects/<pid>/nodes/ops" \
   -H 'Authorization: Bearer dev-<name>' -H 'Content-Type: application/json' \
   -H 'If-Match: "rev-0"' -H 'Idempotency-Key: lock-op-0001' \
@@ -1299,7 +1305,7 @@ source scope. A token retry is bounded but can increase request cost.
 
 ## GT-0028 — Source delete left derived evidence in live records
 
-**Status:** RESOLVED — regression tests added; verify the Phase 0 PR checks before deployment
+**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
 **Class:** Data lifecycle / privacy
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1345,7 +1351,7 @@ same purge transaction or have an explicit retention contract.
 
 ## GT-0029 — PDF extraction ran inside the API process
 
-**Status:** RESOLVED — process worker and resource-limit tests added; verify the Phase 0 PR checks
+**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
 **Class:** Upload handling / availability
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1377,7 +1383,7 @@ limits, and never move PdfReader extraction back into the API request process.
 
 ## GT-0030 — Dev API trusted loopback proxy metadata
 
-**Status:** RESOLVED — regression tests added; verify the Phase 0 PR checks
+**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
 **Class:** Development security boundary
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1412,7 +1418,7 @@ security review.
 
 ## GT-0031 — dev-stop mistook PID reuse for a live service
 
-**Status:** RESOLVED — shell regression tests added; verify Linux lifecycle CI
+**Status:** RESOLVED — CI run [42606956716](https://github.com/1998x-stack/TraceMap/actions/runs/42606956716) passed
 **Class:** Local deployment lifecycle / reliability
 **Severity:** P1
 **First seen:** 2026-11-09
