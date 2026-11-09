@@ -26,6 +26,7 @@
 | Restart smoke could inherit user database | [GT-0016](#gt-0016--restart-test-inherited-database-url) |
 | Test commands broke when run outside repository root | [GT-0017](#gt-0017--relative-commands-and-unscoped-tmp-cleanup) |
 | Safety tests fail only when `TRACEMAP_*` is exported in the shell | [GT-0018](#gt-0018--safety-tests-depended-on-ambient-tracemap-variables) |
+| `crypto.randomUUID is not a function` (LAN / plain-HTTP origin) | [GT-0021](#gt-0021--cryptorandomuuid-is-not-a-function-on-a-plain-http-lan-origin) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
 | HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
 | Test suite is slow (~40 s) | [GT-0011](#gt-0011--sqlite-ddlfsync-is-slow-on-this-host) |
@@ -57,6 +58,7 @@ Verified commits:
 | `7c06f87` | E2E DB-override proof + restart sentinel (GT-0015, GT-0016). |
 | `784511c` | Private runtime permissions and gotchas record (verified baseline for this review). |
 | `1182bc1`, `771b3f4`, `52bfd20` | Independent Linux review: hermetic safety tests, storage-error contract, PDF coverage (GT-0018–GT-0020). |
+| `ebbec19` | LAN/plain-HTTP origin support: UUID fallback (GT-0021). |
 
 ## 3. Most common errors (index)
 
@@ -83,6 +85,7 @@ Verified commits:
 | GT-0018 | Safety tests depended on ambient `TRACEMAP_*` variables | Test/Reproducibility | P2 |
 | GT-0019 | Deployment guide left the shell in `apps/web` | Documentation | P2 |
 | GT-0020 | Locked SQLite returned an opaque non-JSON 500 | Backend/Reliability | P2 |
+| GT-0021 | `crypto.randomUUID` missing on a plain-HTTP LAN origin | Frontend/Deployment | P1 |
 
 ## 5. Open issues / roadmap
 
@@ -957,3 +960,54 @@ the body, and that the database is writable again once the lock is released.
 and keep timeouts configurable for tests/ops.
 
 **Links:** commit `771b3f4` (this review).
+
+## GT-0021 — `crypto.randomUUID is not a function` on a plain-HTTP LAN origin
+
+**Status:** RESOLVED
+**Class:** Frontend / Deployment (secure context)
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Chromium, `http://192.168.169.223:5173` (LAN IP, plain HTTP), commit `c7ef5fd`.
+
+**Symptoms:** when the workbench is opened from another machine on the LAN, the
+UI loads but **every write fails**: the feedback banner shows
+`!crypto.randomUUID is not a function` and no project/source can be created
+(GET requests still render fine).
+
+**Minimal reproduction:**
+```bash
+# API on loopback, Vite bound to the LAN IP
+scripts/dev-start.sh
+apps/web/node_modules/.bin/vite apps/web --host 192.168.169.223 --port 5173 --strictPort
+# in a browser on another machine: http://192.168.169.223:5173 → 创建研究项目
+```
+In the console: `window.isSecureContext === false`, `typeof crypto.randomUUID === 'undefined'`
+(but `crypto.getRandomValues` is a function).
+
+**Expected:** the workbench works over the LAN.
+
+**Actual:** `crypto.randomUUID` is a **secure-context-only** API. `127.0.0.1`,
+`localhost` and HTTPS are secure contexts; a plain-HTTP **LAN IP is not**, so the
+property is absent and each `Idempotency-Key` generation threw.
+
+**Root cause:** `apps/web/src/api.ts` used `const key = () => crypto.randomUUID();`
+with no fallback.
+
+**Fix:** add `newId()` — use `crypto.randomUUID` when available, otherwise build
+an RFC 4122 v4 UUID from `crypto.getRandomValues` (available in insecure
+contexts), with a `Math.random` last resort.
+
+**Files:** `apps/web/src/api.ts`.
+
+**Related tests:** `apps/web/e2e/insecure-context.spec.ts` (removes
+`crypto.randomUUID` before load, then performs two writes).
+
+**Verification:** Playwright against the real LAN origin reported
+`isSecureContext=false`, `randomUUID=undefined`, and successfully created a
+project ("新项目已创建"); `npm run test:e2e` → **5 passed**.
+
+**Prevention:** keep the E2E stubbing `randomUUID`; if HTTPS is ever added this
+becomes moot, but the fallback stays harmless. Any future `crypto.subtle` usage
+would have the same secure-context constraint — plan to terminate TLS for LAN use.
+
+**Links:** commit `ebbec19`.

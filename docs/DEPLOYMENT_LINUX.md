@@ -133,7 +133,42 @@ Then on your laptop:
 - OpenAPI JSON: <http://127.0.0.1:8000/openapi.json>
 - Health: <http://127.0.0.1:8000/health>
 
-No firewall change, reverse proxy, or `0.0.0.0` binding is required or allowed.
+No firewall change, reverse proxy, or `0.0.0.0` binding is required or allowed
+for the default loopback deployment.
+
+### Access from another machine on the LAN (opt-in, insecure)
+
+The default is loopback-only and `scripts/dev-*` intentionally refuse
+non-loopback hosts. To open the **UI only** on the LAN, keep the API on loopback
+and bind a Vite dev server to the host's LAN IP — Vite proxies `/api` to
+`127.0.0.1` server-side, so the API port is never exposed:
+
+```bash
+LANIP=$(ip -4 -o addr show scope global | awk 'NR==1{split($4,a,"/");print a[1]}')
+echo "open http://$LANIP:5173"
+# the API must already be running on loopback (scripts/dev-start.sh)
+source scripts/dev-common.sh   # provides stop_service, paths, and $WEB_VITE
+stop_service web "$WEB_PID_FILE" "$WEB_PORT" "vite" || true   # free 5173
+nohup env TRACEMAP_PROXY_TARGET=http://127.0.0.1:8000 \
+  "$WEB_VITE" "$WEB_DIR" --host "$LANIP" --port 5173 --strictPort \
+  >> "$LOG_DIR/web-lan.log" 2>&1 &
+echo $! > "$PID_DIR/web-lan.pid"
+```
+
+Stop it with `kill "$(cat "$PID_DIR/web-lan.pid")"`, then run
+`scripts/dev-start.sh` to return to loopback-only.
+
+Warnings — read before doing this:
+
+- Development authentication is a fake `Bearer dev-<name>` token: **anyone on the
+  LAN can use the API through the UI**. Only do this on a trusted network.
+- The Vite **dev** server is not hardened for exposure; prefer the SSH tunnel (§4).
+- Plain HTTP is not a browser secure context, so `crypto.randomUUID` is absent
+  there — this used to break every write ([GT-0021](gotchas.md#gt-0021--cryptorandomuuid-is-not-a-function-on-a-plain-http-lan-origin)).
+  In this mode `crypto.getRandomValues` is used as a fallback; terminate TLS
+  before relying on any other secure-context-only API.
+- The API port `8000` and `/docs` stay loopback-only; a host firewall (e.g.
+  `ufw`) may still block inbound `5173`.
 
 ## 5. Environment variables & data paths
 
@@ -253,7 +288,7 @@ Never delete `~/tracemap-runtime/data/tracemap-dev.db` to "make tests pass".
 | OpenAPI contract | `python scripts/export_openapi.py --check` | **22 operations / 19 paths OK** |
 | Benchmark | `python scripts/benchmark_domain.py` | median **3.1 ms**, p95 **4.0 ms**, 21 nodes |
 | Frontend build | `npm run build` | **passed** |
-| Browser E2E | `npm run test:e2e` | **4 passed** (incl. text-layer PDF upload) |
+| Browser E2E | `npm run test:e2e` | **5 passed** (incl. text-layer PDF upload and insecure-context fallback) |
 | Smoke (live + workflow) | `scripts/smoke-test.sh` | **31 passed, 0 failed** |
 | Restart/persistence | `scripts/smoke-test.sh --restart` | **8 passed** |
 | Prod guard | `TRACEMAP_ENV=production ... create_app()` | raises `RuntimeError` |
@@ -263,7 +298,7 @@ Never delete `~/tracemap-runtime/data/tracemap-dev.db` to "make tests pass".
 
 Baseline commit `58497c2` (27 tests, 3 E2E) → corrected tree after the
 independent review of `784511c` (34 backend tests, 8 deployment safety tests,
-4 E2E). See §12 for the cold-start reproduction record.
+5 E2E). See §12 for the cold-start reproduction record.
 
 ## 10. FAQ
 
