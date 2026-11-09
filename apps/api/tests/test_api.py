@@ -60,8 +60,7 @@ def test_source_quotes_verified_revision_idempotency_and_delete(client,headers,c
     dele=client.delete(f"/api/v1/projects/{pid}/sources/{sid}",headers=h(headers,3,'delete-src-111'))
     assert dele.status_code==200 and dele.json()['revision']==4
     now=client.get(f"/api/v1/projects/{pid}/map",headers=headers).json()
-    assert now['nodes'][-1]['verification']=='unverified'
-    assert now['nodes'][-1]['evidenceRefs'][0]['anchorStatus']=='source_deleted'
+    assert len(now['nodes']) == 1  # the source-backed claim subtree is purged
     assert client.get(f"/api/v1/projects/{pid}/sources/{sid}/paragraphs",headers=headers).status_code==404
 
 

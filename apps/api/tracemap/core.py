@@ -300,16 +300,44 @@ def apply_ops(tree: dict, operations: list[dict], paragraphs: dict, *, ai_target
     return draft
 
 
-def degrade_source(tree: dict, source_id: str) -> dict:
+def purge_source(tree: dict, source_id: str) -> dict:
+    """Remove source-backed claims and their descendants from a map snapshot.
+
+    Source deletion is an irreversible privacy operation, not merely an anchor
+    status change. Deleting a cited node's descendants is deliberately
+    conservative: child claims may have been derived from the removed evidence.
+    """
     result = deepcopy(tree)
-    for n in result["nodes"]:
-        touched = False
-        for ref in n["evidenceRefs"]:
-            if ref.get("sourceId") == source_id:
-                ref["anchorStatus"] = "source_deleted"
-                touched = True
-        if touched:
-            n["verification"] = "unverified"
+    nodes = result["nodes"]
+    root_id = result["rootId"]
+    directly_affected = {
+        node["id"] for node in nodes
+        if any(ref.get("sourceId") == source_id for ref in node.get("evidenceRefs", []))
+    }
+
+    # The root is structural and must survive. Remove any root-level source refs
+    # without deleting the project itself.
+    directly_affected.discard(root_id)
+    removed: set[str] = set()
+    for node_id in directly_affected:
+        removed.update(descendants(nodes, node_id))
+
+    result["nodes"] = [node for node in nodes if node["id"] not in removed]
+    for node in result["nodes"]:
+        node["evidenceRefs"] = [
+            ref for ref in node.get("evidenceRefs", [])
+            if ref.get("sourceId") != source_id
+        ]
+
+    # Compact sibling order after removing branches.
+    siblings: dict[str, list[dict]] = {}
+    for node in result["nodes"]:
+        if node.get("parentId") is not None:
+            siblings.setdefault(node["parentId"], []).append(node)
+    for children in siblings.values():
+        children.sort(key=lambda item: (item["sortOrder"], item["id"]))
+        for index, child in enumerate(children):
+            child["sortOrder"] = index
     return result
 
 
