@@ -1,0 +1,607 @@
+# TraceMap — Gotchas & Fault Knowledge Base
+
+> Engineering knowledge base for anyone (human or agent) deploying, testing or
+> fixing TraceMap on Linux. **Read this before changing code or re-running a
+> failing command.** Every entry is a *real* observation on the reference host
+> unless it is explicitly tagged `HYPOTHESIS`.
+
+## 1. Quick diagnosis entry points
+
+| Symptom | Start here |
+| --- | --- |
+| `uvicorn: command not found` from `npm run test:e2e` | [GT-0001](#gt-0001--playwright-web-server-assumed-a-global-uvicornpython) |
+| Data "disappears" after restart, or a stray `tracemap-dev.db` appears in the repo root | [GT-0002](#gt-0002--default-sqlite-path-is-cwd-relative--import-side-effect-creates-a-stray-db) |
+| `npm install` pulls unexpected versions / different Chromium build | [GT-0003](#gt-0003--no-frontend-lockfile--dependency-drift) |
+| E2E touches the developer database or collides on ports | [GT-0004](#gt-0004--e2e-reused-dev-servers-and-a-shared-database-file) |
+| HTTP **500** from a write with a large `If-Match` | [GT-0005](#gt-0005--oversized-if-match-revision-caused-a-500-overflowerror) |
+| `python3 -m venv` / `pip` fails ("ensurepip is not available") | [GT-0006](#gt-0006--system-python-has-no-pip-or-venv-on-ubuntu-2404) |
+| Root node lost its title after applying a generated draft | [GT-0007](#gt-0007--committing-a-generation-draft-replaces-the-entire-map) |
+| `StarletteDeprecationWarning: ... install httpx2 instead` | [GT-0008](#gt-0008--deprecated-starlette-testclient--httpx-pairing) |
+| `/docs` renders blank with no internet | [GT-0009](#gt-0009--swagger-ui-at-docs-loads-assets-from-a-cdn) |
+| Untracked `tsconfig.tsbuildinfo` after a build | [GT-0010](#gt-0010--tsc--b-leaves-an-untracked-tsbuildinfo) |
+| Test suite is slow (~40 s) | [GT-0011](#gt-0011--sqlite-ddlfsync-is-slow-on-this-host) |
+
+## 2. Current environment and verified commits
+
+Reference host (see `docs/DEPLOYMENT_LINUX.md` for the full baseline):
+
+- Ubuntu 24.04.3 LTS, kernel `7.0.0-38-generic`, x86_64, 12 vCPU, 31 GiB RAM.
+- Python **3.12.3** (system) installed via **`uv 0.13.5`** into `apps/api/.venv`
+  — the system interpreter has **no `pip`/`ensurepip`** ([GT-0006](#gt-0006--system-python-has-no-pip-or-venv-on-ubuntu-2404)).
+- Node **v22.23.3**, npm **10.9.9**; Vite 5.4.21, React 18.3.1,
+  `@xyflow/react` 12.12.1, TypeScript 5.9.3, Playwright **1.65.0** (Chromium 1254).
+- Backend: FastAPI 0.162.2, Starlette 1.10.0, Pydantic 2.14.3, SQLAlchemy 2.1.8,
+  Uvicorn 0.54.0, pypdf 6.21.4, pytest 9.2.0, httpx 0.28.1.
+- `sudo` requires a password → no `apt`, no system-wide units, no firewall edits.
+
+Verified commits:
+
+| Commit | Meaning |
+| --- | --- |
+| `58497c2` | Upstream baseline as found on `main` (27 Python tests, 3 Chromium E2E). |
+| `f0402e2` | E2E harness isolation (fixes [GT-0001](#gt-0001--playwright-web-server-assumed-a-global-uvicornpython), [GT-0004](#gt-0004--e2e-reused-dev-servers-and-a-shared-database-file)). |
+| `023df9a` | Lockfile + ignore rules (fixes [GT-0003](#gt-0003--no-frontend-lockfile--dependency-drift), [GT-0010](#gt-0010--tsc--b-leaves-an-untracked-tsbuildinfo)). |
+| `429afac` | `If-Match` bounds (fixes [GT-0005](#gt-0005--oversized-if-match-revision-caused-a-500-overflowerror)). |
+| `3e7c1fd` | Restart-persistence + lifecycle tests. |
+| `ea14213` | Deployment scripts + CI script check (mitigates [GT-0002](#gt-0002--default-sqlite-path-is-cwd-relative--import-side-effect-creates-a-stray-db), [GT-0006](#gt-0006--system-python-has-no-pip-or-venv-on-ubuntu-2404)). |
+
+## 3. Most common errors (index)
+
+- `uvicorn: command not found` → GT-0001
+- `Error: Process from config.webServer was not able to start. Exit code: 127` → GT-0001
+- `OverflowError: Python int too large to convert to SQLite INTEGER` → GT-0005
+- `The virtual environment was not created successfully because ensurepip is not available` → GT-0006
+- `StarletteDeprecationWarning ... httpx2` → GT-0008
+- `EADDRINUSE` / "port already in use" from `bash -n`-clean scripts → use `scripts/dev-status.sh` first
+- `REVISION_CONFLICT` (409) after editing in two places → expected CAS behaviour, reload and retry
+- `NO_UNDO_AVAILABLE` (409) → last change was `source_add`/`source_delete`; deletion is irreversible by design
+
+## 4. Resolved issues
+
+| ID | Title | Class | Sev |
+| --- | --- | --- | --- |
+| GT-0001 | Playwright web server assumed a global `uvicorn`/`python` | Deployment/Test | P1 |
+| GT-0002 | Default SQLite path is CWD-relative; import creates a stray DB | Deployment/Database | P1 |
+| GT-0003 | No frontend lockfile → dependency drift | Environment | P2 |
+| GT-0004 | E2E reused dev servers and a shared database file | Test | P1 |
+| GT-0005 | Oversized `If-Match` revision → 500 `OverflowError` | Backend/Security | P1 |
+| GT-0006 | System Python has no `pip`/`venv` | Environment | P2 |
+| GT-0010 | `tsc -b` leaves an untracked `tsbuildinfo` | Environment | P3 |
+
+## 5. Open issues / roadmap
+
+| ID | Title | Class | Sev | Why not fixed here |
+| --- | --- | --- | --- | --- |
+| GT-0007 | Committing a draft replaces the entire map | Backend/Algorithm | P2 | Needs a product decision (merge vs replace), out of scope for a deployment pass |
+| GT-0008 | Deprecated Starlette `TestClient` + `httpx` pairing | Test | P3 | Would require `httpx2` or a version pin; not blocking now |
+| GT-0009 | Swagger UI assets load from a CDN | Frontend/Docs | P3 | Cosmetic; affects offline `/docs` only |
+| GT-0011 | SQLite DDL/fsync is slow on this host | Environment | P3 | Host disk characteristic; not application code |
+
+## 6. Recommended troubleshooting order
+
+1. `scripts/dev-status.sh` — are the processes up, on the right ports, on loopback?
+2. `scripts/dev-start.sh` — confirm prerequisites and whether a duplicate/port conflict exists.
+3. `curl -fsS http://127.0.0.1:8000/health` and check `$TRACEMAP_RUNTIME_DIR/logs/api.log`.
+4. `scripts/smoke-test.sh` — protocol/workflow level; `--restart` for persistence.
+5. `python -m pytest -q apps/api/tests` — domain and API invariants.
+6. `cd apps/web && npm run build && npm run test:e2e` — UI and browser workflow.
+7. Search this file by the error text or `GT-####` before inventing a new fix.
+
+## 7. Command cheat-sheet
+
+```bash
+# --- one-time setup (no sudo) ---
+cd apps/api && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e '.[test]'
+cd apps/web && npm ci && npx playwright install chromium
+
+# --- run / inspect / stop ---
+scripts/dev-start.sh        # idempotent; waits for health
+scripts/dev-status.sh       # pids, listeners, health, tail of logs
+scripts/dev-stop.sh         # refuses to kill unrelated PIDs
+scripts/smoke-test.sh       # live checks + isolated workflow
+scripts/smoke-test.sh --restart   # start->health->stop->start->persist->stop
+
+# --- tests ---
+source apps/api/.venv/bin/activate
+python -m compileall -q apps/api/tracemap
+python -m pytest -q apps/api/tests
+python scripts/export_openapi.py --check
+python scripts/benchmark_domain.py
+cd apps/web && npm run build && npm run test:e2e
+```
+
+## 8. See also
+
+- [`docs/DEPLOYMENT_LINUX.md`](DEPLOYMENT_LINUX.md) — full from-scratch deployment guide.
+- [`AGENTS.md`](../AGENTS.md) — how a new agent should work in this repo.
+- [`docs/IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — gates and what is *not* implemented.
+- [`docs/BACKEND_OPTIMIZATION_V0.3.md`](BACKEND_OPTIMIZATION_V0.3.md),
+  [`docs/ALGORITHM_OPTIMIZATION_V0.3.md`](ALGORITHM_OPTIMIZATION_V0.3.md),
+  [`docs/VERIFICATION_V0.3.md`](VERIFICATION_V0.3.md) — design and prior evidence.
+- [`scripts/systemd/README.md`](../scripts/systemd/README.md) — optional user service.
+
+---
+
+## GT-0001 — Playwright web server assumed a global `uvicorn`/`python`
+
+**Status:** RESOLVED
+**Class:** Deployment / Test
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Ubuntu 24.04.3, Node 22.23.3, Playwright 1.65.0, commit `58497c2`.
+
+**Symptoms:** `npm run test:e2e` printed
+`[WebServer] bash: line 1: uvicorn: command not found` and
+`Error: Process from config.webServer was not able to start. Exit code: 127`.
+
+**Minimal reproduction:**
+```bash
+cd apps/api && uv venv .venv && uv pip install --python .venv/bin/python -e '.[test]'
+cd ../web && npm ci && npm run test:e2e
+```
+
+**Expected:** Playwright starts the backend and the browser suite runs.
+
+**Actual:** the `webServer` command ran `uvicorn ...` from a login shell whose
+`PATH` does not contain the project virtualenv, so the process never started.
+
+**Root cause:** `apps/web/playwright.config.ts` hard-coded
+`bash -lc "cd ../api && ... uvicorn tracemap.main:app"`. It assumed `uvicorn`
+was installed globally (true in CI after `pip install -e`, false for the
+documented local venv setup) and relied on a relative `cd`.
+
+**Fix:** resolve the interpreter from `apps/api/.venv/bin/python` (override with
+`TRACEMAP_API_PYTHON`, fall back to `python3` for CI) and launch
+`python -m uvicorn ...` with Playwright's `cwd`/`env` options.
+
+**Files:** `apps/web/playwright.config.ts`
+
+**Related tests:** `apps/web/e2e/*.spec.ts` via `npm run test:e2e`.
+
+**Verification:** `npm run test:e2e` → `3 passed (12.4s)` at commit `f0402e2`.
+
+**Prevention:** CI now runs `npm ci`; the harness resolves the interpreter the
+same way a developer would. Prefer `cwd`/`env` over `bash -lc "cd ..."`.
+
+**Links:** commit `f0402e2`.
+
+---
+
+## GT-0002 — Default SQLite path is CWD-relative + import side effect creates a stray DB
+
+**Status:** RESOLVED
+**Class:** Deployment / Database
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** any, commit `58497c2`.
+
+**Symptoms:** a `tracemap-dev.db` file appears in whatever directory imported
+`tracemap.main` (it appeared in the repo root during this session); pointing the
+API at a relative URL means restarting from a different directory appears to
+"lose" all data.
+
+**Minimal reproduction:**
+```bash
+cd /home/ubuntu/codes/TraceMap
+python3 -c "import sys; sys.path.insert(0,'apps/api'); import tracemap.main"   # with TRACEMAP_ENV unset
+ls -la tracemap-dev.db   # created relative to the current directory
+```
+
+**Expected:** development data persists in one predictable location.
+
+**Actual:** `tracemap.main` defines a module-level `app = create_app()`, which
+runs `Base.metadata.create_all()` against the default
+`sqlite:///./tracemap-dev.db` **relative to the process CWD**, as a side effect
+of *importing* the module.
+
+**Root cause:** `apps/api/tracemap/main.py` — `create_app()` default
+`database_url` is `sqlite:///./tracemap-dev.db`; module-level `app = create_app()`.
+(The relative path is intentional for the README two-terminal flow, but unsafe
+for scripted/CI/restart use.)
+
+**Fix (deployment-level, minimal):** the lifecycle scripts always export an
+**absolute** `TRACEMAP_DATABASE_URL` under `$TRACEMAP_RUNTIME_DIR/data/`, so
+imports and restarts are location-independent. The import side effect is
+documented rather than removed (changing the module bootstrap would affect the
+`uvicorn tracemap.main:app` entry point).
+
+**Files:** `scripts/dev-common.sh`, `scripts/dev-start.sh`,
+`scripts/smoke-test.sh`; documented here.
+
+**Related tests:** `apps/api/tests/test_linux_smoke.py::test_file_database_persists_across_api_restart`.
+
+**Verification:** `scripts/smoke-test.sh --restart` → project readable after a
+full stop/start (`8 passed`) at `3e7c1fd`; `scripts/dev-*` write only under
+`$TRACEMAP_RUNTIME_DIR`.
+
+**Prevention:** never rely on the relative default outside the two-terminal
+README flow; always set an absolute `TRACEMAP_DATABASE_URL`. `*.db` is
+git-ignored so a stray file cannot be committed.
+
+**Links:** commit `ea14213`; `scripts/dev-common.sh`.
+
+---
+
+## GT-0003 — No frontend lockfile → dependency drift
+
+**Status:** RESOLVED
+**Class:** Environment / Reproducibility
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** Node 22.23.3, commit `58497c2`.
+
+**Symptoms:** `npm install` resolved different versions than CI had validated;
+the pre-cached Playwright browser (Chromium build **1248**) did not match the
+freshly-installed `@playwright/test` (which needs build **1254**), triggering a
+200 MiB download.
+
+**Minimal reproduction:**
+```bash
+cd apps/web && ls package-lock.json   # absent
+npm install && npx playwright --version    # 1.65.0 although package.json says ^1.54.0
+```
+
+**Expected:** identical installs on every machine/CI run.
+
+**Actual:** there was no `package-lock.json`, so `^` ranges floated to latest.
+
+**Root cause:** lockfile was never generated/committed; CI used `npm install`.
+
+**Fix:** commit the generated `apps/web/package-lock.json` and switch CI to
+`npm ci` for the web-build and browser-e2e jobs.
+
+**Files:** `apps/web/package-lock.json`, `.github/workflows/ci.yml`.
+
+**Related tests:** CI `web-build` / `browser-e2e` jobs.
+
+**Verification:** `npm ci` → `added 91 packages in 2s`, `npx playwright --version` → `1.65.0` (matches cached Chromium 1254).
+
+**Prevention:** keep the lockfile updated in the same PR that changes
+`package.json`; CI uses `npm ci`.
+
+**Links:** commit `023df9a`.
+
+---
+
+## GT-0004 — E2E reused dev servers and a shared database file
+
+**Status:** RESOLVED
+**Class:** Test
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** commit `58497c2`.
+
+**Symptoms:** risk of browser tests writing into the real dev SQLite file, and
+of two runs colliding on `127.0.0.1:8000` / `/tmp/tracemap-e2e.db`.
+
+**Minimal reproduction:** start `scripts/dev-start.sh`, then run
+`npm run test:e2e` with the old config (`reuseExistingServer: !CI`) — Playwright
+adopts the developer's API on port 8000.
+
+**Expected:** E2E uses its own backend, database and ports.
+
+**Actual:** the old harness reused any server already on 8000/5173 and used a
+fixed `/tmp/tracemap-e2e.db`.
+
+**Root cause:** `playwright.config.ts` `reuseExistingServer: !process.env.CI`
+combined with the standard dev ports and a shared DB path.
+
+**Fix:** dedicated E2E ports (API 8010, web 5273 via `--strictPort`) and a
+unique throwaway DB (`tracemap-e2e-<pid>-<time>.db`); the dev servers on
+8000/5173 are never touched.
+
+**Files:** `apps/web/playwright.config.ts`, `apps/web/vite.config.ts`.
+
+**Related tests:** `apps/web/e2e/research-loop.spec.ts`,
+`apps/web/e2e/ui-regression.spec.ts`.
+
+**Verification:** `npm run test:e2e` starts its own uvicorn on `127.0.0.1:8010`
+and passes 3/3 while `scripts/dev-start.sh` keeps running on 8000/5173.
+
+**Prevention:** keep E2E ports/DB disjoint from dev; do not reintroduce a shared
+`/tmp` database. Clean old files with `rm -f /tmp/tracemap-e2e-*.db`.
+
+**Links:** commit `f0402e2`.
+
+---
+
+## GT-0005 — Oversized `If-Match` revision caused a 500 `OverflowError`
+
+**Status:** RESOLVED
+**Class:** Backend / Security
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** FastAPI 0.162.2, SQLAlchemy 2.1.8, SQLite, commit `429afac` (pre-fix `58497c2`).
+
+**Symptoms:** a write with an absurdly large revision returned HTTP 500 with
+`OverflowError: Python int too large to convert to SQLite INTEGER`.
+
+**Minimal reproduction:**
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  "http://127.0.0.1:8000/api/v1/projects/<pid>/nodes/ops" \
+  -H 'Authorization: Bearer dev-<name>' -H 'Content-Type: application/json' \
+  -H 'If-Match: "rev-999999999999999999999"' -H 'Idempotency-Key: bigrev-0001' \
+  -d '{"operations":[]}'
+# before fix: 500 ; after fix: 400
+```
+(Also reproducible with `python -m pytest`; see the regression test.)
+
+**Expected:** an out-of-range revision is a client error (400/409), never 500.
+
+**Actual:** `int()` parsed an unbounded integer; the CAS
+`UPDATE projects SET revision = expected + 1 WHERE revision = expected`
+overflowed the SQLite signed-64-bit column.
+
+**Root cause:** `apps/api/tracemap/main.py::create_app.get_revision` used
+`re.fullmatch(r'"rev-[0-9]+"', ...)` with no upper bound; `claim_revision`
+then wrote `expected + 1`.
+
+**Fix:** bound the parsed value (`MAX_REVISION = 2**53 - 1`, chosen to stay below
+the SQLite limit *including the `+1`* and at the JavaScript safe-integer
+boundary) and return `400 BAD_REQUEST` when exceeded.
+
+**Files:** `apps/api/tracemap/main.py`.
+
+**Related tests:** `apps/api/tests/test_hardening.py::test_oversized_if_match_revision_is_rejected_without_500`.
+
+**Verification:** `python -m pytest -q apps/api/tests` → `30 passed` at `429afac`;
+an endpoint-wide fuzz (all write endpoints, malformed JSON, weird headers) now
+reports **no** 5xx.
+
+**Prevention:** bound every client-supplied integer that is bound into SQL;
+keep the regression test.
+
+**Links:** commit `429afac`; `docs/BACKEND_OPTIMIZATION_V0.3.md §4`.
+
+---
+
+## GT-0006 — System Python has no `pip` or `venv` on Ubuntu 24.04
+
+**Status:** RESOLVED
+**Class:** Environment
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** Ubuntu 24.04.3, Python 3.12.3, no `sudo` password.
+
+**Symptoms:**
+```
+The virtual environment was not created successfully because ensurepip is not
+available ... apt install python3.12-venv
+```
+and `python3 -m pip` → `No module named pip`.
+
+**Minimal reproduction:**
+```bash
+python3 -m venv /tmp/x      # fails: ensurepip missing
+python3 -m pip --version    # No module named pip
+```
+
+**Expected:** a reproducible, isolated backend environment.
+
+**Actual:** `python3-venv`/`python3-pip` are not installed and cannot be
+installed without `sudo`.
+
+**Root cause:** minimal Ubuntu image without the venv/pip packages.
+
+**Fix:** use the already-installed `uv` (0.13.5) to create and populate the venv
+without root:
+```bash
+cd apps/api
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e '.[test]'
+```
+This matches the README's intent (`python -m venv`/`pip` remain valid where those
+packages exist). `scripts/dev-start.sh` fails fast with the exact `uv` command.
+
+**Files:** `scripts/dev-start.sh`; documented in `docs/DEPLOYMENT_LINUX.md`.
+
+**Related tests:** the whole `apps/api/tests` suite runs from this venv.
+
+**Verification:** `uv pip install` → 24 packages; `python -m pytest -q apps/api/tests` → 30 passed.
+
+**Prevention:** prerequisite check in `dev-start.sh`; if `sudo` becomes
+available, `sudo apt-get install -y python3.12-venv` also works.
+
+**Links:** `scripts/dev-start.sh`.
+
+---
+
+## GT-0007 — Committing a generation draft replaces the entire map
+
+**Status:** OPEN (behaviour documented; not changed)
+**Class:** Backend / Algorithm
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** commit `58497c2` and later.
+
+**Symptoms:** after `POST .../generation-drafts/{id}/commit`, the map root
+title becomes the *generation goal*, and any pre-existing manual nodes are gone.
+
+**Minimal reproduction (API level):**
+1. Create a project titled `冒烟研究`.
+2. Add a text source.
+3. `POST /generate` with `{"goal":"可信研究", ...}`.
+4. `POST /generation-drafts/{id}/commit`.
+5. `GET /export?format=md` → the root heading is `可信研究`, not `冒烟研究`, and
+   the map equals the draft exactly.
+
+**Expected (arguably):** replacing the map is explicit, but users may not
+realise prior manual structure is discarded.
+
+**Actual:** `commit_draft` does `commit_map(..., d.payload["map"], ...)`, i.e. a
+whole-map replacement. The UI button is labelled "确认替换地图" (confirm
+**replace** map), and a stale draft is rejected with 409, so the damage is
+bounded — but there is no diff/merge and no warning about dropped manual nodes.
+
+**Root cause:** by design in this prototype; `apps/api/tracemap/main.py`
+(`commit_draft`) and `core.extractive_draft` (root = `root_map(goal[:160])`).
+
+**Fix:** none in this pass (product decision required). Options: merge-only-add
+semantics, or show a removed-node diff before commit.
+
+**Files:** `apps/api/tracemap/main.py`, `apps/web/src/App.tsx` (draft dialog).
+
+**Related tests:** `scripts/smoke-test.sh` asserts the goal-derived heading and
+references this entry; `apps/api/tests/test_api.py::test_draft_never_writes_without_commit_and_undo`.
+
+**Verification:** N/A (open). Behaviour is asserted by the smoke test.
+
+**Prevention / next step:** track under G4; if merge is chosen, add a draft-diff
+test and update the dialog copy.
+
+**Links:** `docs/IMPLEMENTATION_PLAN.md` (G4).
+
+---
+
+## GT-0008 — Deprecated Starlette `TestClient` + `httpx` pairing
+
+**Status:** OPEN
+**Class:** Test
+**Severity:** P3
+**First seen:** 2026-11-09
+**Environment:** Starlette 1.10.0, httpx 0.28.1.
+
+**Symptoms:** every pytest run prints
+`StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead`.
+
+**Expected:** a warning-free suite on supported versions.
+
+**Actual:** the installed Starlette wants `httpx2` for its `TestClient`.
+
+**Root cause:** Starlette's deprecated httpx shim; dependency versions are
+unpinned (`httpx>=0.27,<1`). **HYPOTHESIS:** a future Starlette release will
+remove the httpx path.
+
+**Fix:** none now (test-only, not blocking). Follow-up: add `httpx2` to the test
+extras, or pin Starlette/httpx to a compatible pair.
+
+**Files:** `apps/api/pyproject.toml` (test extra), `apps/api/tests/conftest.py`.
+
+**Related tests:** all of `apps/api/tests`.
+
+**Verification:** `python -m pytest -q apps/api/tests` → `30 passed, 1 warning`.
+
+**Prevention:** treat the warning as a canary; address before the removal lands.
+
+**Links:** upstream Starlette deprecation notice.
+
+---
+
+## GT-0009 — Swagger UI at `/docs` loads assets from a CDN
+
+**Status:** OPEN
+**Class:** Frontend / Docs
+**Severity:** P3
+**First seen:** 2026-11-09
+**Environment:** FastAPI 0.162.2, air-gapped browser.
+
+**Symptoms:** offline, `/docs` returns 200 but the page renders blank because
+`swagger-ui-bundle.js` / `.css` come from `cdn.jsdelivr.net`.
+
+**Minimal reproduction:** open `http://127.0.0.1:8000/docs` with no internet.
+
+**Expected:** a usable API browser on a local-only host.
+
+**Actual:** HTML depends on CDN assets.
+
+**Root cause:** FastAPI default Swagger UI `swagger_js_url`/`swagger_css_url`.
+
+**Fix:** none now. `/openapi.json` remains fully local and `curl`-friendly, so
+the API is still inspectable offline.
+
+**Files:** `apps/api/tracemap/main.py` (if a self-hosted UI is chosen later).
+
+**Related tests:** `scripts/smoke-test.sh` asserts `/docs` returns 200 (HTML),
+not that it renders offline.
+
+**Verification:** `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/docs` → 200.
+
+**Prevention:** if offline docs matter, vendor the Swagger assets and point
+`FastAPI(docs_url=...)` / CDN URLs at local files.
+
+**Links:** FastAPI docs on `swagger_js_url`.
+
+---
+
+## GT-0010 — `tsc -b` leaves an untracked `tsbuildinfo`
+
+**Status:** RESOLVED
+**Class:** Environment
+**Severity:** P3
+**First seen:** 2026-11-09
+**Environment:** TypeScript 5.9.3, commit `58497c2`.
+
+**Symptoms:** after `npm run build`, `apps/web/tsconfig.tsbuildinfo` shows as
+untracked and can be committed by accident.
+
+**Minimal reproduction:**
+```bash
+cd apps/web && npm run build && git status --short   # ?? apps/web/tsconfig.tsbuildinfo
+```
+
+**Expected:** build cache is ignored.
+
+**Actual:** not covered by `.gitignore`.
+
+**Root cause:** `tsc -b` incremental cache; no ignore rule.
+
+**Fix:** add `*.tsbuildinfo` (and `.pi/`) to `.gitignore`.
+
+**Files:** `.gitignore`.
+
+**Verification:** `git status --short` no longer lists it.
+
+**Prevention:** keep build artifacts ignored.
+
+**Links:** commit `023df9a`.
+
+---
+
+## GT-0011 — SQLite DDL/fsync is slow on this host
+
+**Status:** OPEN (environment observation, not a code defect)
+**Class:** Environment / Performance
+**Severity:** P3
+**First seen:** 2026-11-09
+**Environment:** ext4 on `/dev/sda3`, busy shared host.
+
+**Symptoms:** `python -m pytest -q apps/api/tests` takes ~40 s; the per-test
+`client` fixture setup (which creates the app and its tables) is ~1.7 s.
+
+**Minimal reproduction:**
+```python
+import sqlite3, time
+c = sqlite3.connect("/tmp/x.db"); c.execute("PRAGMA foreign_keys=ON")
+t = time.perf_counter()
+for i in range(13): c.execute(f"create table if not exists t{i}(id integer primary key, v text)")
+c.commit(); print(round(time.perf_counter()-t, 3))   # ~1.2 s here
+```
+
+**Expected:** milliseconds.
+
+**Actual:** ~1.2–2.7 s for 13 trivial DDL statements on disk; `create_app` over
+**in-memory** SQLite is **23 ms**.
+
+**Root cause:** filesystem/fsync latency on this host (the box runs many other
+services). Not application code. **HYPOTHESIS:** general disk contention.
+
+**Fix:** none needed for correctness. For faster local tests one could point
+test SQLite files at a tmpfs (e.g. `/dev/shm`), at the cost of persistence
+fidelity.
+
+**Files:** n/a (test/DB configuration only).
+
+**Related tests:** all `apps/api/tests`.
+
+**Verification:** in-memory `create_app` 0.023 s vs on-disk 1.99 s.
+
+**Prevention:** do not treat wall-clock test time here as an application SLO.
+
+**Links:** `docs/VERIFICATION_V0.3.md §3`.
+
+---
+
+*Last updated: 2026-11-09. When you resolve an entry, keep it — update the status,
+add the fix, files, tests and the verifying commit SHA. Never delete a resolved
+entry and never remove the failing test that guarded it.*

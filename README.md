@@ -37,6 +37,8 @@ npm run dev
 
 Open `http://127.0.0.1:5173` (frontend) or `http://127.0.0.1:8000/docs` (development API). The demo header `Authorization: Bearer dev-alice` is **not secure authentication**; it must never be deployed beyond the local loopback interface.
 
+For a scripted, restart-safe local deployment on Linux — including start/stop/status/smoke scripts, an SSH-tunnel access recipe, backup/restore and a fault knowledge base — see [Linux local deployment](docs/DEPLOYMENT_LINUX.md) and [gotchas](docs/gotchas.md). Contributors and agents should start with [AGENTS.md](AGENTS.md).
+
 ## Test
 
 ```bash
