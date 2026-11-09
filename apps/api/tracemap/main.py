@@ -28,6 +28,11 @@ from .core import (RuleError, uid, sha, canon, split_paragraphs, root_map,
                    markdown_export, MAX_FILE_BYTES, MAX_TOTAL_CHARS, MAX_SOURCES,
                    EXTRACTIVE_SELECTION_POLICY)
 
+# Largest revision we accept from a client. Chosen to be far below the SQLite
+# signed-64-bit limit (the CAS update writes expected + 1) and at the JavaScript
+# Number.MAX_SAFE_INTEGER boundary so a round-tripped revision is lossless.
+MAX_REVISION = 2 ** 53 - 1
+
 
 class NewProject(BaseModel):
     title: str = Field(min_length=1, max_length=80)
@@ -122,9 +127,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return p
 
     def get_revision(if_match: str | None) -> int:
-        if not if_match or not re.fullmatch(r'"rev-[0-9]+"', if_match):
+        # Bound the parsed revision so a client-supplied count can never overflow
+        # the 64-bit INTEGER column during the CAS UPDATE (previously a 500).
+        if not if_match or not re.fullmatch(r'"rev-[0-9]{1,19}"', if_match):
             problem("BAD_REQUEST", '必须提供 If-Match: "rev-N"', 400)
-        return int(if_match[5:-1])
+        value = int(if_match[5:-1])
+        if value > MAX_REVISION:
+            problem("BAD_REQUEST", 'If-Match 版本号超出支持范围', 400)
+        return value
 
     def claim_revision(s, p: Project, expected: int):
         result = s.execute(update(Project).where(Project.id == p.id, Project.revision == expected)
