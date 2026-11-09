@@ -5,7 +5,7 @@ import {
 } from '@xyflow/react';
 import {
   Api,ApiError,type Project,type Source,type MapDocument,type MapNode,
-  type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal,
+  type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal,type Health,
 } from './api';
 import {layout,sliceCodepoints} from './layout';
 import ResearchNodeCard, {type ResearchFlowNode} from './components/ResearchNode';
@@ -67,6 +67,7 @@ export default function App(){
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
+  const [health,setHealth]=useState<Health|null>(null);
   const [editTitle,setEditTitle]=useState('');
   const [newChild,setNewChild]=useState('');
   const [panel,setPanel]=useState<'detail'|'source'>('detail');
@@ -86,6 +87,7 @@ export default function App(){
     setPanel('detail');setLoadingSource(false);
   },[]);
   useEffect(()=>{refreshList().catch(e=>setError(getError(e)));},[refreshList]);
+  useEffect(()=>{api.health().then(setHealth).catch(()=>{});},[]);
   useEffect(()=>{
     if(!draft&&!patch)return;
     const previous=document.activeElement instanceof HTMLElement?document.activeElement:null;
@@ -102,6 +104,7 @@ export default function App(){
   const outline=useMemo(()=>tree?outlineTree(tree):[],[tree]);
   const verifiedCount=tree?.nodes.filter(n=>n.verification==='verified_by_user').length??0;
   const anchoredCount=tree?.nodes.filter(n=>n.evidenceRefs.some(r=>r.anchorStatus==='anchored')).length??0;
+  const llmActive=health?.generationProvider==='llm';
   const filteredProjects=projects.filter(p=>p.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const sourceChars=sources.reduce((sum,s)=>sum+s.extractedCharCount,0);
   useEffect(()=>{
@@ -222,7 +225,9 @@ export default function App(){
           </>}
         </div>
       </header>
-      <div className="dev-banner"><span className="dev-banner-label">DEVELOPMENT PREVIEW</span><span>规则型原文摘录演示 · <b>没有连接真实 LLM</b> · 仅限本机开发，勿上传敏感信息</span></div>
+      <div className="dev-banner"><span className="dev-banner-label">DEVELOPMENT PREVIEW</span><span>{llmActive
+        ? <>已连接真实 LLM（<b>{health?.generationModel||'iagent/standard'}</b>）· 候选内容必须人工确认 · 仅限本机开发，勿上传敏感信息</>
+        : <>规则型原文摘录演示 · <b>没有连接真实 LLM</b> · 仅限本机开发，勿上传敏感信息</>}</span></div>
       {(error||notice)&&<div role={error?'alert':'status'} className={'feedback '+(error?'bad':'good')}>
         <span className="feedback-icon" aria-hidden="true">{error?'!':'✓'}</span><span>{error||notice}</span>
         <button type="button" onClick={()=>{setError('');setNotice('');}} aria-label="关闭提示">×</button></div>}
@@ -266,7 +271,7 @@ export default function App(){
         <section className="map-panel" aria-label="研究地图画布">
           <div className="map-head"><div className="map-project-meta"><div className="eyebrow">02 / REASONING CANVAS</div><h2 title={active.title}>{active.title}</h2><p>{active.goal||'让每个结论，都有迹可循。'}</p></div>
             <div className="map-actions"><span className="node-count">{tree.nodes.length} NODES</span>
-              <button className="button button-primary" disabled={busy||sources.length===0} onClick={generate}>◈ 生成原文结构草稿</button></div>
+              <button className="button button-primary" disabled={busy||sources.length===0} onClick={generate}>{llmActive?'◈ 生成候选导图（LLM）':'◈ 生成原文结构草稿'}</button></div>
           </div>
           <div className="map-metrics" aria-label="地图摘要">
             <div><span className="metric-pictogram">◇</span> <strong>{tree.nodes.length}</strong> 节点</div>
@@ -362,8 +367,8 @@ export default function App(){
       {draft&&active&&tree&&<div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="draft-title" tabIndex={-1} ref={modalRef}>
         <div className="modal-eyebrow"><span className="review-spark">✳</span> REVIEW BEFORE COMMIT <span className="modal-step">01 / 02</span></div>
         <h2 id="draft-title">导图草稿预览</h2>
-        <p>本地规则引擎从原文提取了 <b>{draft.map.nodes.length}</b> 个节点。请确认结构是否合理；当前正式地图保持不变。</p>
-        <div className="review-caution"><span>ⓘ</span> 这是一份原文摘录草稿，不是经过核验的 AI 研究结论。</div>
+        <p>{llmActive?<>模型根据原文提出了 <b>{draft.map.nodes.length}</b> 个候选节点。请逐条核对后再决定是否应用；当前正式地图保持不变。</>:<>本地规则引擎从原文提取了 <b>{draft.map.nodes.length}</b> 个节点。请确认结构是否合理；当前正式地图保持不变。</>}</p>
+        <div className="review-caution"><span>{llmActive?'✳':'ⓘ'}</span> {llmActive?'候选内容由语言模型生成，可能包含错误或无法定位的引用，必须人工核对原文后才能采信。':'这是一份原文摘录草稿，不是经过核验的 AI 研究结论。'}{llmActive&&typeof draft.droppedEvidenceCount==='number'&&draft.droppedEvidenceCount>0?`（已丢弃 ${draft.droppedEvidenceCount} 条无法在原文中定位的引用）`:''}</div>
         <div className="modal-list-caption"><span>PROPOSED STRUCTURE</span><span>{draft.map.nodes.length} NODES</span></div>
         <div className="modal-items">{draft.map.nodes.slice(0,10).map(n=><div key={n.id} className="draft-row"><span className="draft-kind">{typeLabels[n.type]||n.type}</span><strong>{n.title.slice(0,110)}</strong></div>)}</div>
         <footer><button className="button button-quiet" onClick={()=>setDraft(null)}>取消</button><button className="button button-primary" disabled={busy}
