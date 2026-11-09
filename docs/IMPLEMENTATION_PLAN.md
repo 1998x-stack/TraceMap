@@ -4,12 +4,18 @@ Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work;
 
 | Gate | Scope | Evidence / stage |
 | --- | --- | --- |
-| G0 — structure + contracts | Monorepo structure, ADR, dev README, CI, deterministic validators | Local pytest + remote CI: pending until GitHub run |
+| G0 — structure + contracts | Monorepo structure, ADR, dev README, CI, deterministic validators | [CI PASS](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626): 14 Python tests, strict frontend build and 1 Chromium E2E |
 | G1 — sources | Project CRUD; dev-only identity isolation; SQLite persistence; inline text/MD/PDF; stable paragraph anchors; quotas | Local API tests; source parsing is synchronous and not isolated (PARTIAL) |
 | G2 — map | React Flow canvas; manual add/rename/delete/verify; revision control; idempotency; rollback; JSON/MD export | Local API tests; frontend build via CI; move/reorder UI and full history screen pending (PARTIAL) |
 | G3 — LLM generation | Provider adapter; cost budget; untrusted document handling; schema validation; durable generation jobs | NOT STARTED — extractive demonstration draft only, clearly labelled |
 | G4 — AI Patch | Real LLM operations; per-op Diff dependencies; TTL; protected edits; 409; atomic apply | PARTIAL — rule-based question proposals with opt-in apply; no LLM or real condense |
 | G5 — production/research | Secure identity; PostgreSQL migration; private S3; worker isolation; user study; Xmind import matrix | NOT STARTED; explicit production guard prevents accidental public launch |
+
+## Verified baseline (2026-11-09)
+
+- [CI run 42553780626](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626): Python API passed **14 tests**, TypeScript/Vite build passed, Playwright Chromium E2E **1 passed**.
+- Browser test covers source→draft preview→commit→citation→Patch preview→apply→undo→Markdown. This does **not** validate real LLM behavior or Xmind import.
+- Open implementation issues: [G1](https://github.com/1998x-stack/TraceMap/issues/1), [G2](https://github.com/1998x-stack/TraceMap/issues/2), [G3](https://github.com/1998x-stack/TraceMap/issues/3), [G4](https://github.com/1998x-stack/TraceMap/issues/4), [G5](https://github.com/1998x-stack/TraceMap/issues/5).
 
 ## Test exit criteria for the current prototype
 
