@@ -1071,7 +1071,21 @@ attempt 1 `finish=length len=848` (fail), attempts 2–3 `finish=stop` (ok).
 **Prevention:** always inspect `finish_reason`; keep a generous output budget for
 reasoning models; retry once before surfacing an error.
 
-**Links:** `docs/LLM_PROVIDER.md`; commit `7efe4fd`.
+**Links:** `docs/LLM_PROVIDER.md`; commit `7efe4fd`; follow-up in PR #7.
+
+**Follow-up — second occurrence (same day).** The error resurfaced on a real
+5580-character Markdown source. Measurement showed the model spent the *entire*
+budget on hidden reasoning and returned **no content at all**, even at the
+provider's documented maximum of 16384 tokens (`finish_reason=length,
+content_len=0`) — so raising `max_tokens` cannot fix it. The real cause was an
+**open-ended prompt**. Tightening the system prompt (JSON only, "do not write any
+analysis/reasoning", at most 12 nodes, title ≤60 / note ≤40 chars, and demanding
+the JSON immediately as the last user line) made the same document succeed:
+`finish=stop`, ~1.6–4.0k completion tokens, 12 grounded nodes, **0** dropped
+anchors. New constants `MAX_LLM_NODES=12`, `MAX_LLM_NOTE_CHARS=240`; the error
+message now states the model returned nothing because reasoning exhausted the
+budget. Regression tests: `test_system_prompt_forces_concise_json_only_output`,
+`test_build_tree_caps_node_count_and_note_length`.
 
 ---
 

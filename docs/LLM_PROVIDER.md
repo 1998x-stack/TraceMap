@@ -63,7 +63,7 @@ The key is resolved from `TRACEMAP_LLM_API_KEY`, else from the file at
 | `LLM_NOT_CONFIGURED` | 503 | no | `llm` mode selected but no key found. |
 | `LLM_UNAVAILABLE` | 503 | yes | Cannot reach the endpoint (timeout/DNS). |
 | `LLM_UPSTREAM_ERROR` | 502 | yes | Upstream returned a non-2xx status. |
-| `LLM_OUTPUT_TRUNCATED` | 502 | yes | `finish_reason=length`; retried once with a doubled token budget up to `TRACEMAP_LLM_RETRY_MAX_TOKENS` (GT-0027). |
+| `LLM_OUTPUT_TRUNCATED` | 502 | yes | `finish_reason=length`: the reasoning model used the whole token budget and returned no content; retried once with a doubled budget up to `TRACEMAP_LLM_RETRY_MAX_TOKENS` (GT-0022 / GT-0027). |
 | `LLM_INVALID_OUTPUT` | 502 | yes | No parseable/valid JSON, or no usable nodes; retried once. |
 
 If `llm` mode is selected but no key is configured, the API **falls back to the
@@ -82,6 +82,17 @@ curl -fsS http://127.0.0.1:8000/health | jq .
 # disable (back to the deterministic demo)
 # TRACEMAP_GENERATION_MODE=extractive
 ```
+
+## Prompting notes (GT-0022)
+
+The reference model is a **reasoning** model: an open-ended prompt can make it
+"think" until the whole token budget is gone and return **no content**. The
+system prompt therefore forbids any analysis/reasoning, caps the output at
+`MAX_LLM_NODES` (16) nodes with short titles/notes, and demands the JSON as the
+last line. If you still see `LLM_OUTPUT_TRUNCATED`, the source is too large or
+too ambiguous for a single call — split it, or raise
+`TRACEMAP_LLM_MAX_TOKENS` / `TRACEMAP_LLM_RETRY_MAX_TOKENS` (the provider
+maximum is 16384).
 
 ## Limitations (not production)
 

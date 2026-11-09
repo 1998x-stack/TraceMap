@@ -281,3 +281,28 @@ def test_draft_from_llm_does_not_repeat_same_truncation_budget(monkeypatch):
     assert budgets == [8192]
     assert exc.value.code == "LLM_OUTPUT_TRUNCATED"
     assert "8192 tokens" in exc.value.message
+
+def test_system_prompt_forces_concise_json_only_output():
+    """GT-0022: the prompt must forbid free-form reasoning and cap node count.
+
+    A reasoning model would otherwise spend the entire token budget 'thinking'
+    and return no content at all.
+    """
+    messages = llm.build_messages("goal", [{"sourceId": "s", "title": "t",
+                                            "paragraphs": [{"id": "p", "ordinal": 0, "text": "hi"}]}])
+    system = messages[0]["content"]
+    assert "NOTHING else" in system
+    assert "Do NOT write any analysis" in system
+    assert f"at most {llm.MAX_LLM_NODES} nodes" in system
+    assert messages[1]["content"].rstrip().endswith("Do not write any analysis first.")
+
+
+def test_build_tree_caps_node_count_and_note_length():
+    source, paragraphs, index = _fixture()
+    proposed = [{"type": "claim", "title": f"n{i}", "note": "x" * 5000, "sourceId": source,
+                 "paragraphId": paragraphs[0]["id"], "exactQuote": paragraphs[0]["text"][:2]}
+                for i in range(30)]
+    tree, _ = llm.build_tree("goal", proposed[:llm.MAX_LLM_NODES], index, {source: "t"})
+    model_nodes = [n for n in tree["nodes"] if n["parentId"] is not None and n["type"] != "topic"]
+    assert len(model_nodes) <= llm.MAX_LLM_NODES
+    assert all(len(n["note"]) <= llm.MAX_LLM_NOTE_CHARS for n in model_nodes)
