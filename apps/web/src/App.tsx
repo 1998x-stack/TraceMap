@@ -1,6 +1,6 @@
 import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {
-  ReactFlow,Background,BackgroundVariant,Controls,MiniMap,useNodesInitialized,useReactFlow,
+  ReactFlow,Background,BackgroundVariant,Controls,MiniMap,type ReactFlowInstance,
   type NodeMouseHandler,
 } from '@xyflow/react';
 import {
@@ -15,18 +15,6 @@ const nodeTypes={research:ResearchNodeCard};
 const typeLabels:Record<string,string>={topic:'主题',claim:'主张',evidence:'依据',counterpoint:'反例',question:'问题',decision:'决策'};
 const patchTypes=[{op:'questions',label:'追问',note:'梳理仍需验证的问题',icon:'?'},{op:'challenge',label:'质疑',note:'补充反向观察',icon:'↗'},{op:'expand',label:'扩展',note:'延伸当前分支',icon:'+'}];
 const kindSymbol:Record<string,string>={text:'T',markdown:'M',pdf:'P'};
-
-/** Keep the root and newly committed branches in view after initial mount/data changes. */
-function FitCanvas({revision,nodeCount}:{revision:number;nodeCount:number}){
-  const ready=useNodesInitialized();
-  const flow=useReactFlow();
-  useEffect(()=>{
-    if(!ready||nodeCount===0)return;
-    const raf=requestAnimationFrame(()=>{void flow.fitView({padding:0.24,maxZoom:1.05,minZoom:0.3,duration:220});});
-    return()=>cancelAnimationFrame(raf);
-  },[ready,revision,nodeCount,flow]);
-  return null;
-}
 
 function getError(error:unknown){
   return error instanceof ApiError?`${error.code} · ${error.message}`:error instanceof Error?error.message:String(error);
@@ -70,6 +58,7 @@ export default function App(){
   const [composerOpen,setComposerOpen]=useState(true);
   const sourceRequest=useRef(0);
   const modalRef=useRef<HTMLDivElement|null>(null);
+  const canvasFlow=useRef<ReactFlowInstance|null>(null);
 
   const refreshList=useCallback(async()=>{setProjects((await api.listProjects()).items);},[]);
   const load=useCallback(async(project:Project)=>{
@@ -98,6 +87,14 @@ export default function App(){
   const anchoredCount=tree?.nodes.filter(n=>n.evidenceRefs.some(r=>r.anchorStatus==='anchored')).length??0;
   const filteredProjects=projects.filter(p=>p.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const sourceChars=sources.reduce((sum,s)=>sum+s.extractedCharCount,0);
+  useEffect(()=>{
+    if(!tree)return;
+    // Wait until React Flow has committed and measured the latest nodes before fitting.
+    // A zero-duration fit avoids a misleading, temporarily clipped canvas after commit.
+    const timer=window.setTimeout(()=>{void canvasFlow.current?.fitView({padding:0.25,minZoom:0.25,maxZoom:1.05,duration:0});},160);
+    return()=>window.clearTimeout(timer);
+  },[active?.id,tree?.revision,tree?.nodes.length]);
+
   const selectedTrail=tree?nodeTrail(tree,selected):[];
   useEffect(()=>setEditTitle(selected?.title||''),[selected?.id,selected?.title]);
 
@@ -265,9 +262,8 @@ export default function App(){
             {tree.nodes.length===1&&<div className="canvas-hint" aria-live="polite"><span>✳</span> 导入资料后，生成你的第一张研究地图。</div>}
             <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes}
               fitView fitViewOptions={{padding:0.24,minZoom:0.4,maxZoom:1.05}}
-              onNodeClick={nodeClick} nodesConnectable={false} nodesDraggable={false} elementsSelectable
+              onNodeClick={nodeClick} onInit={instance=>{canvasFlow.current=instance;}} nodesConnectable={false} nodesDraggable={false} elementsSelectable
               minZoom={0.25} maxZoom={1.8} snapToGrid={false} proOptions={{hideAttribution:true}}>
-              <FitCanvas revision={tree.revision} nodeCount={tree.nodes.length}/>
               <Background variant={BackgroundVariant.Dots} color="#d2d9df" gap={22} size={1.2}/>
               <Controls showInteractive={false} position="bottom-left"/>
               <MiniMap position="bottom-right" pannable zoomable nodeColor="#608c94" maskColor="rgba(228,235,237,.75)"/>

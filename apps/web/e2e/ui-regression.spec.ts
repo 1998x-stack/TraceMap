@@ -18,6 +18,7 @@ test('desktop workspace has readable evidence hierarchy, review-safe dialog and 
   await expect(page.locator('.node-count')).toHaveText('1 NODES');
   await page.getByRole('button',{name:'确认替换地图'}).click();
   await expect(page.locator('.research-node')).toHaveCount(4);
+  await expect(page.locator('.react-flow__node').last()).toBeInViewport();
   await expect(page.getByText('02 / REASONING CANVAS')).toBeVisible();
   await page.screenshot({path:'test-results/ui-desktop.png',fullPage:true});
   await page.locator('.react-flow__node').filter({hasText:'产品经理希望每个结论'}).click();
@@ -49,6 +50,7 @@ test('mobile: project creation and source input remain usable without horizontal
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(2);
   await expect(page.locator('.react-flow__node')).toHaveCount(1);
+  await page.locator('.map-panel').scrollIntoViewIfNeeded();
   await expect(page.locator('.react-flow__node').first()).toBeInViewport();
   await page.screenshot({path:'test-results/ui-mobile.png',fullPage:true});
 });
