@@ -327,3 +327,107 @@ def test_locked_database_returns_structured_retryable_error(tmp_path, monkeypatc
             assert ok.status_code == 200, ok.text
     finally:
         app.state.engine.dispose()
+
+
+def test_source_delete_purges_live_map_drafts_and_all_history_snapshots(client, headers, create_project):
+    """Phase 0 regression: deleting a source must not leave copied evidence in derived rows."""
+    import json
+    from sqlalchemy import select
+    from tracemap.db import Change, Draft
+
+    secret = "PHASE0_SENSITIVE_SOURCE_LITERAL_7f31"
+    pid = create_project("purge lifecycle")["id"]
+    source = client.post(
+        f"/api/v1/projects/{pid}/sources/text",
+        json={"title": "private interview", "text": f"{secret} and its supporting context", "format": "text"},
+        headers=h(headers, 0, "phase0-source-0001"),
+    )
+    assert source.status_code == 202, source.text
+    sid = source.json()["sourceId"]
+    paragraph = client.get(f"/api/v1/projects/{pid}/sources/{sid}/paragraphs", headers=headers).json()["items"][0]
+    root = client.get(f"/api/v1/projects/{pid}/map", headers=headers).json()["rootId"]
+
+    edited = client.post(
+        f"/api/v1/projects/{pid}/nodes/ops",
+        json={"operations": [
+            {"op": "add", "parentId": root, "node": {"type": "claim", "title": secret,
+             "note": "derived note", "evidenceRefs": [{"sourceId": sid, "paragraphId": paragraph["id"],
+             "start": 0, "end": len(paragraph["text"]), "exactQuote": paragraph["text"]}]}},
+            {"op": "add", "parentId": root, "node": {"type": "question", "title": "independent node"}},
+        ]},
+        headers=h(headers, 1, "phase0-map-0001"),
+    )
+    assert edited.status_code == 200, edited.text
+    generated = client.post(
+        f"/api/v1/projects/{pid}/generate",
+        json={"goal": "研究来源", "sourceIds": [sid]},
+        headers=h(headers, 2, "phase0-generate-0001"),
+    )
+    assert generated.status_code == 202, generated.text
+    draft_id = generated.json()["draftId"]
+
+    deleted = client.delete(
+        f"/api/v1/projects/{pid}/sources/{sid}",
+        headers=h(headers, 2, "phase0-delete-0001"),
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deletionMode"] == "permanent_purge"
+
+    current_map = client.get(f"/api/v1/projects/{pid}/map", headers=headers)
+    assert current_map.status_code == 200
+    assert secret not in current_map.text
+    assert [node["title"] for node in current_map.json()["nodes"]] == ["purge lifecycle", "independent node"]
+
+    json_export = client.get(f"/api/v1/projects/{pid}/export?format=json", headers=headers)
+    markdown_export = client.get(f"/api/v1/projects/{pid}/export?format=md", headers=headers)
+    assert secret not in json_export.text
+    assert secret not in markdown_export.text
+    assert client.get(f"/api/v1/projects/{pid}/sources/{sid}/paragraphs", headers=headers).status_code == 404
+
+    draft = client.get(f"/api/v1/projects/{pid}/generation-drafts/{draft_id}", headers=headers)
+    assert draft.status_code == 200
+    assert draft.json()["status"] == "invalidated"
+    assert secret not in draft.text
+    commit = client.post(
+        f"/api/v1/projects/{pid}/generation-drafts/{draft_id}/commit",
+        headers=h(headers, 3, "phase0-draft-commit-0001"),
+    )
+    assert commit.status_code == 409
+
+    with client.app.state.Session() as session:
+        changes = session.scalars(select(Change).where(Change.project_id == pid)).all()
+        drafts = session.scalars(select(Draft).where(Draft.project_id == pid)).all()
+        serialized = json.dumps(
+            [{"before": row.before_json, "after": row.after_json} for row in changes],
+            ensure_ascii=False,
+        )
+        assert secret not in serialized
+        assert all(d.status == "invalidated" for d in drafts)
+        assert all(secret not in json.dumps(d.payload, ensure_ascii=False) for d in drafts)
+
+
+def test_local_dev_api_rejects_forwarded_proxy_headers_and_nonlocal_host(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from tracemap.main import create_app
+
+    monkeypatch.setenv("TRACEMAP_ENV", "development")
+    app = create_app(f"sqlite:///{tmp_path / 'proxy-guard.db'}")
+    try:
+        with TestClient(app, client=("127.0.0.1", 50001)) as local:
+            for name, value in [
+                ("Forwarded", "for=203.0.113.7;proto=https;host=tracemap.example"),
+                ("X-Forwarded-For", "203.0.113.7"),
+                ("X-Real-IP", "203.0.113.7"),
+                ("X-Forwarded-Host", "tracemap.example"),
+                ("CF-Connecting-IP", "203.0.113.7"),
+            ]:
+                response = local.get("/health", headers={name: value})
+                assert response.status_code == 403, (name, response.text)
+                assert response.json()["error"]["code"] == "DEV_PROXY_HEADERS_REJECTED"
+            response = local.get("/health", headers={"Host": "tracemap.example"})
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "DEV_HOST_NOT_LOCAL"
+        with TestClient(app) as loopback:
+            assert loopback.get("/health").status_code == 200
+    finally:
+        app.state.engine.dispose()
