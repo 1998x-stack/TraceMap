@@ -69,7 +69,7 @@ Content-Type: application/json
 
 ## 6. 实际路由与未来契约的差异管理
 
-`packages/contracts/openapi.generated.json` 是通过 `scripts/export_openapi.py` 从 FastAPI **真实实现**导出的接口快照，包含 19 个路径模板；`--check` 进入 CI，拒绝未经同步的接口变更。产品设计阶段的 `projects/.../design/contracts/openapi.yaml` 保留为目标契约，明确不是“已实现接口”。当前未统一声明完整的响应 DTO；这仍需未来 OpenAPI schema 对照和前端客户端生成测试。
+`packages/contracts/openapi.generated.json` 是通过 `scripts/export_openapi.py` 从 FastAPI **真实实现**导出的接口快照，包含 19 个路径模板；`--check` 进入 CI，拒绝未经同步的路径/HTTP 方法/参数和响应状态等稳定接口变化；对 FastAPI/Pydantic 版本相关的组件 Schema 不做逐字比较。产品设计阶段的 `projects/.../design/contracts/openapi.yaml` 保留为目标契约，明确不是“已实现接口”。当前未统一声明完整的响应 DTO；这仍需未来 OpenAPI schema 对照和前端客户端生成测试。
 
 ## 7. 安全威胁与阻塞项
 

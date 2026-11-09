@@ -40,7 +40,7 @@ python scripts/benchmark_domain.py
 
 ## 4. 路由契约一致性检查
 
-`python scripts/export_openapi.py --check` 将实际 FastAPI `/openapi.json` 的结构与 [`packages/contracts/openapi.generated.json`](../packages/contracts/openapi.generated.json) 比较；新加/删除路径后若忘记更新契约，CI 失败。当前共 **19 个实际路径模板**。这不意味着所有响应 DTO 已完整声明，不能与未来产品的设计 OpenAPI 混为一谈。
+`python scripts/export_openapi.py --check` 将实际 FastAPI `/openapi.json` 中稳定的**路径、HTTP 方法、参数名称/必需性、请求媒体类型、响应状态码**与 [`packages/contracts/openapi.generated.json`](../packages/contracts/openapi.generated.json) 比较；路径或方法等发生改变后若忘记更新快照，CI 失败。框架内部 Schema 字节差异不作为 CI 失败；这是有意识的版本兼容边界，不覆盖所有 DTO 类型差异。当前共 **19 个实际路径模板**。这不意味着所有响应 DTO 已完整声明，不能与未来产品的设计 OpenAPI 混为一谈。
 
 ## 5. 尚未通过/不能覆盖的门槛
 
