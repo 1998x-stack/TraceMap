@@ -1,6 +1,6 @@
 import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {
-  ReactFlow,Background,BackgroundVariant,Controls,MiniMap,
+  ReactFlow,Background,BackgroundVariant,Controls,MiniMap,useNodesInitialized,useReactFlow,
   type NodeMouseHandler,
 } from '@xyflow/react';
 import {
@@ -15,6 +15,18 @@ const nodeTypes={research:ResearchNodeCard};
 const typeLabels:Record<string,string>={topic:'主题',claim:'主张',evidence:'依据',counterpoint:'反例',question:'问题',decision:'决策'};
 const patchTypes=[{op:'questions',label:'追问',note:'梳理仍需验证的问题',icon:'?'},{op:'challenge',label:'质疑',note:'补充反向观察',icon:'↗'},{op:'expand',label:'扩展',note:'延伸当前分支',icon:'+'}];
 const kindSymbol:Record<string,string>={text:'T',markdown:'M',pdf:'P'};
+
+/** Keep the root and newly committed branches in view after initial mount/data changes. */
+function FitCanvas({revision,nodeCount}:{revision:number;nodeCount:number}){
+  const ready=useNodesInitialized();
+  const flow=useReactFlow();
+  useEffect(()=>{
+    if(!ready||nodeCount===0)return;
+    const raf=requestAnimationFrame(()=>{void flow.fitView({padding:0.24,maxZoom:1.05,minZoom:0.3,duration:220});});
+    return()=>cancelAnimationFrame(raf);
+  },[ready,revision,nodeCount,flow]);
+  return null;
+}
 
 function getError(error:unknown){
   return error instanceof ApiError?`${error.code} · ${error.message}`:error instanceof Error?error.message:String(error);
@@ -255,6 +267,7 @@ export default function App(){
               fitView fitViewOptions={{padding:0.24,minZoom:0.4,maxZoom:1.05}}
               onNodeClick={nodeClick} nodesConnectable={false} nodesDraggable={false} elementsSelectable
               minZoom={0.25} maxZoom={1.8} snapToGrid={false} proOptions={{hideAttribution:true}}>
+              <FitCanvas revision={tree.revision} nodeCount={tree.nodes.length}/>
               <Background variant={BackgroundVariant.Dots} color="#d2d9df" gap={22} size={1.2}/>
               <Controls showInteractive={false} position="bottom-left"/>
               <MiniMap position="bottom-right" pannable zoomable nodeColor="#608c94" maskColor="rgba(228,235,237,.75)"/>
