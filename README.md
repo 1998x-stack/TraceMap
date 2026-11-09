@@ -73,11 +73,13 @@ TraceMap/
 
 | Area | State |
 | --- | --- |
-| Core domain + API unit/integration tests | Implemented (local tests) |
-| React Flow interface | Implemented; CI verification required |
+| Core domain + API unit/integration tests | **14 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626) |
+| React Flow interface | **Build passed; Chromium E2E 1 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626) |
 | Real LLM generation and rich AI Patch | **Not implemented**; extractive/rule demo only |
 | External authentication + privacy controls | **Not implemented**; production blocked |
 | Isolated job worker + PostgreSQL + S3 | **Not implemented** |
 | Production release / real Xmind import testing | **Not implemented** |
 
 No claims of model accuracy, Xmind compatibility, customer usage, security accreditation, or PMF are made. See [implementation gates](docs/IMPLEMENTATION_PLAN.md).
+
+**Tracked next gates:** [G1 auth/isolated uploads](https://github.com/1998x-stack/TraceMap/issues/1) · [G2 durable database/jobs](https://github.com/1998x-stack/TraceMap/issues/2) · [G3 grounded LLM](https://github.com/1998x-stack/TraceMap/issues/3) · [G4 full Patch](https://github.com/1998x-stack/TraceMap/issues/4) · [G5 Xmind and release](https://github.com/1998x-stack/TraceMap/issues/5).
