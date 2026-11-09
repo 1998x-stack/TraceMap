@@ -14,7 +14,7 @@
 - Editable tree: add, rename, move, delete, verify and attach evidence via atomic operations; 120 nodes and depth-5 structural constraints.
 - Whole-project revision and `If-Match` optimistic concurrency, scoped idempotency and undo of the latest map change.
 - Read-only generation drafts and Patch proposals (rule-based **demo**, not a model); explicit human commit; revision safety.
-- UTF-8 Markdown and JSON export; React Flow research canvas with typed semantic nodes, evidence/source inspector, clear verification states, responsive mobile onboarding, and review-before-apply patch dialogue.
+- UTF-8 Markdown and JSON export; React Flow research canvas with typed semantic nodes, evidence/source inspector, clear verification states, responsive mobile onboarding + hierarchy outline, and review-before-apply patch dialogue.
 - API unit/integration tests and GitHub Actions for Python tests, frontend type/build checks, and Chromium end-to-end workflow + responsive UI checks.
 
 ## Quick start (local only)

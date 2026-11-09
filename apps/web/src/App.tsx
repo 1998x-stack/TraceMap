@@ -31,6 +31,22 @@ function nodeTrail(tree:MapDocument,selected:MapNode|null){
   return trail;
 }
 
+/** A narrow screen is a reading task: render a deterministic outline instead of a tiny panned graph. */
+function outlineTree(tree:MapDocument):Array<{node:MapNode;depth:number}>{
+  const groups=new Map<string,MapNode[]>();
+  for(const node of tree.nodes){if(node.parentId){const siblings=groups.get(node.parentId)||[];siblings.push(node);groups.set(node.parentId,siblings);}}
+  for(const siblings of groups.values())siblings.sort((a,b)=>a.sortOrder-b.sortOrder||a.id.localeCompare(b.id));
+  const byId=new Map(tree.nodes.map(n=>[n.id,n]));
+  const result:Array<{node:MapNode;depth:number}>=[];
+  const visit=(id:string,depth:number)=>{
+    const node=byId.get(id);if(!node||result.length>=120)return;
+    result.push({node,depth});
+    for(const child of groups.get(id)||[])visit(child.id,depth+1);
+  };
+  visit(tree.rootId,0);
+  return result;
+}
+
 export default function App(){
   const [projects,setProjects]=useState<Project[]>([]);
   const [active,setActive]=useState<Project|null>(null);
@@ -83,6 +99,7 @@ export default function App(){
 
   const selected=tree?.nodes.find(n=>n.id===selectedId)||null;
   const graph=useMemo(()=>tree?layout(tree):{nodes:[],edges:[]},[tree]);
+  const outline=useMemo(()=>tree?outlineTree(tree):[],[tree]);
   const verifiedCount=tree?.nodes.filter(n=>n.verification==='verified_by_user').length??0;
   const anchoredCount=tree?.nodes.filter(n=>n.evidenceRefs.some(r=>r.anchorStatus==='anchored')).length??0;
   const filteredProjects=projects.filter(p=>p.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
@@ -260,6 +277,19 @@ export default function App(){
           <div className="canvas-container">
             <div className="canvas-key"><span><i className="legend-swatch legend-claim"/> 主张</span><span><i className="legend-swatch legend-evidence"/> 证据</span><span><i className="legend-swatch legend-question"/> 待探索</span></div>
             {tree.nodes.length===1&&<div className="canvas-hint" aria-live="polite"><span>✳</span> 导入资料后，生成你的第一张研究地图。</div>}
+            <div className="mobile-outline" role="tree" aria-label="移动端研究地图">
+              <div className="mobile-outline-heading">MAP OUTLINE <span>{outline.length} 个节点</span></div>
+              {outline.map(({node,depth})=><button key={node.id} type="button" role="treeitem" aria-level={depth+1}
+                aria-selected={selectedId===node.id}
+                className={'outline-node '+(node.id===selectedId?'selected':'')}
+                style={{paddingLeft:14+depth*16}}
+                onClick={()=>{setSelectedId(node.id);setPanel('detail');document.querySelector('.inspector')?.scrollIntoView({behavior:'smooth',block:'start'});}}>
+                <span className="outline-type">{typeLabels[node.type]||node.type}</span>
+                <strong>{node.title}</strong>
+                <small>{node.verification==='verified_by_user'?'✓ 人工已核验':node.evidenceRefs.some(r=>r.anchorStatus==='anchored')?'◈ 有原文引用':'◇ 待核验'}</small>
+              </button>)}
+              <p className="mobile-outline-note">在移动端使用层级阅读视图。点击任一节点可跳转至证据与编辑面板。</p>
+            </div>
             <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes}
               fitView fitViewOptions={{padding:0.24,minZoom:0.4,maxZoom:1.05}}
               onNodeClick={nodeClick} onInit={instance=>{canvasFlow.current=instance;}} nodesConnectable={false} nodesDraggable={false} elementsSelectable

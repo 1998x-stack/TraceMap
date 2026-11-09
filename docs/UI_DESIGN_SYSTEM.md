@@ -24,7 +24,7 @@ The core job is not “draw a beautiful mind map.” It is **form a judgement wi
 | Reasoning canvas | Fluid | Semantic node tree, legend, map counters and gentle zoom controls |
 | Evidence inspector | 312 px | Single selection, citation location, human verification, structured edit and reviewed changes |
 
-Breakpoints: at ≤1600 px compact widths; at ≤1070 px inspector moves under the map; at ≤750 px entire workspace becomes stacked and **creation/import remain available**. No sidebar-only essential action may disappear on mobile.
+Breakpoints: at ≤1600 px compact widths; at ≤1070 px inspector moves under the map; at ≤750 px entire workspace becomes stacked; the pan/zoom canvas is replaced by a readable hierarchical **map outline**, and **creation/import remain available**. No sidebar-only essential action may disappear on mobile.
 
 ## 3. Token vocabulary
 
@@ -69,7 +69,7 @@ Node positions are deterministic, ordered, and centered on first and last descen
 - Visible keyboard focus on buttons, fields and file-upload target.
 - Semantic `tablist` / `tab` for inspector mode; modals have dialog role, title, and Escape dismissal.
 - Source/verification information is conveyed with text + symbol, not color alone.
-- Important actions remain reachable at 390 px viewport; no horizontal document overflow in Chromium.
+- Important actions remain reachable at 390 px viewport; mobile uses the accessible, tappable map outline; no horizontal document overflow in Chromium.
 - Animation is reduced if `prefers-reduced-motion` is active.
 - Images are not used to fake evidence or business traction; no live LLM, secure auth or live multiuser collaboration is implied.
 

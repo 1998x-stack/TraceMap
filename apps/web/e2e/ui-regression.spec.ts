@@ -49,24 +49,9 @@ test('mobile: project creation and source input remain usable without horizontal
   await expect(page.locator('.source-item')).toHaveCount(1);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(2);
-  await expect(page.locator('.react-flow__node')).toHaveCount(1);
-  // Mobile pages are deliberately stacked and taller than one browser viewport.
-  // Assert visibility *inside the canvas*, not intersection with the window's
-  // current vertical scroll position.
-  const geometry=await page.evaluate(()=>{
-    const node=document.querySelector('.react-flow__node')?.getBoundingClientRect();
-    const canvas=document.querySelector('.canvas-container')?.getBoundingClientRect();
-    const status=node?getComputedStyle(document.querySelector('.react-flow__node')!).visibility:null;
-    return node&&canvas?{left:node.left,right:node.right,top:node.top,bottom:node.bottom,width:node.width,height:node.height,
-      canvasLeft:canvas.left,canvasRight:canvas.right,canvasTop:canvas.top,canvasBottom:canvas.bottom,visibility:status}:null;
-  });
-  console.log('MOBILE_CANVAS_BOUNDS',JSON.stringify(geometry));
-  expect(geometry).not.toBeNull();
-  expect(geometry!.visibility).toBe('visible');
-  expect(geometry!.width).toBeGreaterThan(100);
-  expect(geometry!.right).toBeGreaterThan(geometry!.canvasLeft);
-  expect(geometry!.left).toBeLessThan(geometry!.canvasRight);
-  expect(geometry!.bottom).toBeGreaterThan(geometry!.canvasTop);
-  expect(geometry!.top).toBeLessThan(geometry!.canvasBottom);
+  await expect(page.locator('.mobile-outline .outline-node')).toHaveCount(1);
+  await expect(page.locator('.mobile-outline .outline-node').first()).toBeVisible();
+  await page.locator('.mobile-outline .outline-node').first().click();
+  await expect(page.locator('.inspector-content')).toBeVisible();
   await page.screenshot({path:'test-results/ui-mobile.png',fullPage:true});
 });
