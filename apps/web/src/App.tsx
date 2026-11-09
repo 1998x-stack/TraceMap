@@ -1,6 +1,6 @@
 import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {
-  ReactFlow,Background,BackgroundVariant,Controls,MiniMap,type ReactFlowInstance,
+  ReactFlow,Background,BackgroundVariant,Controls,MiniMap,type ReactFlowInstance,type Edge,
   type NodeMouseHandler,
 } from '@xyflow/react';
 import {
@@ -8,7 +8,7 @@ import {
   type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal,
 } from './api';
 import {layout,sliceCodepoints} from './layout';
-import ResearchNodeCard from './components/ResearchNode';
+import ResearchNodeCard, {type ResearchFlowNode} from './components/ResearchNode';
 
 const api=new Api('dev-alice');
 const nodeTypes={research:ResearchNodeCard};
@@ -58,7 +58,7 @@ export default function App(){
   const [composerOpen,setComposerOpen]=useState(true);
   const sourceRequest=useRef(0);
   const modalRef=useRef<HTMLDivElement|null>(null);
-  const canvasFlow=useRef<ReactFlowInstance|null>(null);
+  const canvasFlow=useRef<ReactFlowInstance<ResearchFlowNode,Edge>|null>(null);
 
   const refreshList=useCallback(async()=>{setProjects((await api.listProjects()).items);},[]);
   const load=useCallback(async(project:Project)=>{
