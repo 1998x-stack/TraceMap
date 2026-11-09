@@ -1293,3 +1293,72 @@ provider-compatible retry ceiling; monitor actual usage and costs.
 **Limitation:** the provider's context/output ceiling still applies. If it
 rejects the larger budget, configure a supported ceiling or reduce the selected
 source scope. A token retry is bounded but can increase request cost.
+
+
+## GT-0028 — LLM prompt boundaries and retrieval budget were not robust
+
+**Status:** RESOLVED — regression coverage and implementation committed; CI pending
+**Class:** Backend / LLM reliability / Evidence integrity
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Phase 1 reliability review of PR #7.
+
+**Symptoms:** source text was interpolated between literal untrusted-data delimiters.
+A document containing the closing delimiter, fake role labels or JSON could imitate
+prompt structure. The LLM adapter also selected only the first 40 paragraphs per
+source, so relevant evidence late in a long source was invisible. There was no
+input-token budget or per-source coverage metadata.
+
+**Minimal reproduction:** regression tests
+`apps/api/tests/test_llm.py::test_build_messages_keeps_prompt_injection_as_json_string_data`
+and `test_select_relevant_paragraphs_finds_late_relevant_and_balances_sources`.
+The synthetic fixture is `apps/api/tests/fixtures/llm_golden_dataset.json`.
+
+**Expected:** source fields are transported as JSON data, never as forgeable prompt
+delimiters; retrieval ranks the full source before applying per-source caps, gives
+each source a selection opportunity, and stays within an explicit estimated input
+budget.
+
+**Fix:** serialize the research goal and selected documents as one JSON user payload;
+make the system prompt explicitly treat all document strings as untrusted data;
+rank with CJK bigrams and Latin words; select round-robin across sources within
+`TRACEMAP_LLM_INPUT_TOKEN_BUDGET`; restrict anchor verification to paragraphs
+actually included in the prompt; record retrieval and coverage metadata in Draft.
+
+**Verification:** synthetic retrieval and prompt-serialization tests are deterministic.
+They do not measure live model prompt-injection resistance or factual accuracy.
+CI result: pending until the implementation commit is tested.
+
+---
+
+## GT-0029 — Malformed LLM JSON roots and provider bodies could cause crashes or memory pressure
+
+**Status:** RESOLVED — regression coverage and implementation committed; CI pending
+**Class:** Backend / LLM reliability
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Phase 1 reliability review of PR #7.
+
+**Symptoms:** `extract_json_object` accepted JSON arrays, null and scalar roots,
+although downstream code expected an object. A non-string node `type` such as
+`[]` raised `TypeError: unhashable type` during set membership. The provider
+response was read without a byte limit.
+
+**Minimal reproduction:** regression tests
+`test_extract_json_object_rejects_non_object_roots`,
+`test_build_tree_drops_non_string_node_type_without_crashing` and
+`test_chat_rejects_oversized_provider_response`.
+
+**Expected:** require object roots and a valid nodes array; type-check every
+candidate field before set membership or evidence resolution; cap upstream bodies
+before parsing; return stable LLM errors without echoing provider data or secrets.
+
+**Fix:** strict object-root and nodes-array validation; fail-closed node field
+validation; a 2 MiB response read limit; explicit `LLM_RESPONSE_TOO_LARGE` and
+`LLM_INPUT_TOO_LARGE` error codes; retry invalid model output once and account
+for usage returned by failed attempts.
+
+**Verification:** regression tests are committed; implementation CI result pending.
+No real provider call is claimed.
+
+---

@@ -171,6 +171,8 @@ def test_generate_endpoint_uses_llm_when_enabled(client, headers, create_project
     draft = client.get(f"/api/v1/projects/{pid}/generation-drafts/{response.json()['draftId']}",
                        headers=headers).json()
     assert draft["generationMode"] == "llm"
+    assert draft["retrieval"]["retrievalPolicy"] == "lexical_round_robin_v1"
+    assert draft["retrieval"]["selectedParagraphCount"] >= 1
     assert all(n["verification"] == "unverified" for n in draft["map"]["nodes"])
     assert all(n["origin"] == "ai" for n in draft["map"]["nodes"] if n["parentId"] is not None)
 
@@ -191,7 +193,7 @@ class _FakeResponse:
     def __init__(self, body: bytes): self._body = body
     def __enter__(self): return self
     def __exit__(self, *args): return False
-    def read(self): return self._body
+    def read(self, size=-1): return self._body if size < 0 else self._body[:size]
 
 
 def test_chat_detects_truncated_output(monkeypatch):
@@ -387,7 +389,7 @@ def test_select_relevant_paragraphs_never_exceeds_token_budget():
         "paragraphs": [{"id": f"p-{i}", "ordinal": 0, "text": "研究材料 " * 300}]
     } for i in range(5)]
     selected, metadata = llm.select_relevant_paragraphs(
-        "研究目标", documents, input_token_budget=512
+        "研究目标", documents, input_token_budget=2048
     )
     assert metadata["estimatedInputTokens"] <= 512
     assert metadata["selectedParagraphCount"] == sum(
@@ -432,3 +434,52 @@ def test_golden_dataset_retrieval_contracts():
             {document["sourceId"] for document in selected}
         ), case["id"]
         assert metadata["estimatedInputTokens"] <= 20000, case["id"]
+
+
+def test_draft_from_llm_retries_invalid_schema_and_aggregates_usage(monkeypatch):
+    source, paragraphs, index = _fixture()
+    monkeypatch.setenv("TRACEMAP_LLM_API_KEY", "test-key")
+    valid = json.dumps({"nodes": [{
+        "type": "claim", "title": "重试后有效", "sourceId": source,
+        "paragraphId": paragraphs[0]["id"], "exactQuote": paragraphs[0]["text"]
+    }]})
+    calls = []
+
+    def flaky(messages, config):
+        calls.append(config["max_tokens"])
+        if len(calls) == 1:
+            return "[]", {"total_tokens": 2}
+        return valid, {"total_tokens": 3}
+
+    documents = [{"sourceId": source, "title": "访谈", "paragraphs": [
+        {"id": p["id"], "ordinal": p["ordinal"], "text": p["text"]} for p in paragraphs
+    ]}]
+    result = llm.draft_from_llm("目标", documents, index, {source: "访谈"}, chat=flaky)
+    assert len(calls) == 2
+    assert result["usage"]["total_tokens"] == 5
+    assert "重试后有效" in {node["title"] for node in result["tree"]["nodes"]}
+
+
+def test_draft_from_llm_only_accepts_paragraphs_sent_to_model(monkeypatch):
+    source, paragraphs, index = _fixture()
+    outsider = "not-selected"
+    outsider_paragraph = {"id": "outsider-p", "text": "未被选择的来源包含一段可引用原文。"}
+    index[(outsider, outsider_paragraph["id"])] = outsider_paragraph["text"]
+    monkeypatch.setenv("TRACEMAP_LLM_API_KEY", "test-key")
+    valid = json.dumps({"nodes": [
+        {"type": "claim", "title": "越界来源", "sourceId": outsider,
+         "paragraphId": outsider_paragraph["id"], "exactQuote": outsider_paragraph["text"]},
+        {"type": "claim", "title": "已选择来源", "sourceId": source,
+         "paragraphId": paragraphs[0]["id"], "exactQuote": paragraphs[0]["text"]},
+    ]})
+    documents = [{"sourceId": source, "title": "访谈", "paragraphs": [
+        {"id": paragraphs[0]["id"], "ordinal": 0, "text": paragraphs[0]["text"]}
+    ]}]
+    result = llm.draft_from_llm(
+        "目标", documents, index, {source: "访谈", outsider: "未选择来源"},
+        chat=lambda *_: (valid, {"total_tokens": 9}),
+    )
+    titles = {node["title"] for node in result["tree"]["nodes"]}
+    assert "越界来源" not in titles
+    assert "已选择来源" in titles
+    assert result["droppedEvidenceCount"] == 1
