@@ -50,7 +50,7 @@ test('mobile: project creation and source input remain usable without horizontal
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(2);
   await expect(page.locator('.react-flow__node')).toHaveCount(1);
-  await page.locator('.map-panel').scrollIntoViewIfNeeded();
+  await page.locator('.react-flow__node').first().scrollIntoViewIfNeeded();
   await expect(page.locator('.react-flow__node').first()).toBeInViewport();
   await page.screenshot({path:'test-results/ui-mobile.png',fullPage:true});
 });
