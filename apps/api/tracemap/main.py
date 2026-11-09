@@ -25,7 +25,8 @@ from sqlalchemy import select, update, delete, func
 from .db import Base, Project, Source, Paragraph, Change, Draft, Idempotency, Job, engine_for, session_factory, now
 from .core import (RuleError, uid, sha, canon, split_paragraphs, root_map,
                    validate_tree, verify_ref, apply_ops, degrade_source, extractive_draft,
-                   markdown_export, MAX_FILE_BYTES, MAX_TOTAL_CHARS, MAX_SOURCES)
+                   markdown_export, MAX_FILE_BYTES, MAX_TOTAL_CHARS, MAX_SOURCES,
+                   EXTRACTIVE_SELECTION_POLICY)
 
 
 class NewProject(BaseModel):
@@ -75,8 +76,8 @@ def problem(code, message, status=422):
 
 def create_app(database_url: str | None = None) -> FastAPI:
     env = os.getenv("TRACEMAP_ENV", "development")
-    if env == "production":
-        raise RuntimeError("Production is disabled until real authentication, isolated PDF workers and data-retention controls are implemented")
+    if env != "development":
+        raise RuntimeError("Only local development is enabled; production/staging require real authentication, isolated PDF workers and retention controls")
     database_url = database_url or os.getenv("TRACEMAP_DATABASE_URL", "sqlite:///./tracemap-dev.db")
     engine = engine_for(database_url)
     Base.metadata.create_all(engine)  # development convenience; production requires migrations
@@ -87,6 +88,17 @@ def create_app(database_url: str | None = None) -> FastAPI:
     app.state.Session = Session
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+
+    @app.middleware("http")
+    async def _local_dev_only(request: Request, call_next):
+        # Protect against accidentally listening on 0.0.0.0 in the prototype.
+        # A same-host reverse proxy could still forward requests, so this is
+        # defense-in-depth, NOT production authentication or authorization.
+        client_ip = request.client.host if request.client else None
+        if client_ip not in {"127.0.0.1", "::1", "localhost", "testclient"}:
+            return JSONResponse(status_code=403, content={"error": {
+                "code": "DEV_LOCAL_ONLY", "message": "开发接口仅允许本地回环访问", "retryable": False}})
+        return await call_next(request)
 
     @app.exception_handler(RuleError)
     async def _rule_error(_request: Request, exc: RuleError):
@@ -178,14 +190,18 @@ def create_app(database_url: str | None = None) -> FastAPI:
             problem("NO_EXTRACTABLE_TEXT", "找不到可引用的段落", 422)
         return source
 
-    def commit_map(s, p, before, after, expected, user, kind):
-        validate_tree(after, paragraphs_of(s, p.id))
-        revision = claim_revision(s, p, expected)
-        p.map_json = deepcopy(after)
+    def append_change(s, p, before, after, expected, user, kind):
+        """Keep source and map revisions in the same transaction and audit log."""
         cid = uid()
         s.add(Change(id=cid, project_id=p.id, owner_id=user, rev_before=expected,
-                     rev_after=revision, kind=kind, before_json=deepcopy(before), after_json=deepcopy(after)))
-        return {"revision": revision, "changeSetId": cid}
+                     rev_after=p.revision, kind=kind, before_json=deepcopy(before), after_json=deepcopy(after)))
+        return {"revision": p.revision, "changeSetId": cid}
+
+    def commit_map(s, p, before, after, expected, user, kind):
+        validate_tree(after, paragraphs_of(s, p.id))
+        claim_revision(s, p, expected)
+        p.map_json = deepcopy(after)
+        return append_change(s, p, before, after, expected, user, kind)
 
     @app.get("/health")
     def health():
@@ -245,6 +261,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             p = get_project(s, pid, user)
             source = save_source(s, p, body.title, body.format, body.text)
             revision = claim_revision(s, p, expected)
+            append_change(s, p, p.map_json, p.map_json, expected, user, "source_add")
             job_id = uid()
             s.add(Job(id=job_id, project_id=pid, status="completed", kind="source_parse_sync", result_id=source.id))
             return record(s, user, f"POST:{pid}:sources/text", key, payload,
@@ -290,6 +307,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             p = get_project(s, pid, user)
             source = save_source(s, p, filename, kind, text, pages)
             revision = claim_revision(s, p, expected)
+            append_change(s, p, p.map_json, p.map_json, expected, user, "source_add")
             job_id = uid()
             s.add(Job(id=job_id, project_id=pid, status="completed", kind="source_parse_sync", result_id=source.id))
             return record(s, user, f"POST:{pid}:sources", key, payload,
@@ -318,10 +336,28 @@ def create_app(database_url: str | None = None) -> FastAPI:
             source = s.scalar(select(Source).where(Source.project_id == pid, Source.id == sid))
             if not source:
                 problem("NOT_FOUND", "资料不存在", 404)
+            before = deepcopy(p.map_json)
+            after = degrade_source(before, sid)
+            validate_tree(after, paragraphs_of(s, p.id))
             claim_revision(s, p, expected)
-            p.map_json = degrade_source(p.map_json, sid)
+            p.map_json = after
             s.execute(delete(Source).where(Source.id == sid))
+            append_change(s, p, before, after, expected, user, "source_delete")
             return record(s, user, f"DELETE:{pid}:source:{sid}", key, payload, {"revision": p.revision})
+
+    @app.get("/api/v1/projects/{pid}/history")
+    def list_history(pid: str, authorization: str | None = Header(None)):
+        """Privacy-minimal revision audit; no original document/quote text."""
+        with Session() as s:
+            p = get_project(s, pid, owner(authorization))
+            changes = s.scalars(select(Change).where(Change.project_id == pid)
+                                .order_by(Change.rev_after.desc()).limit(20)).all()
+            return {"items": [{"changeSetId": c.id, "kind": c.kind,
+                    "revBefore": c.rev_before, "revAfter": c.rev_after,
+                    "createdAt": c.created_at.isoformat(), "undone": c.undone,
+                    "undoable": (not c.undone and c.rev_after == p.revision
+                                 and c.kind in {"manual", "generation_demo", "patch_demo"})}
+                    for c in changes]}
 
     @app.get("/api/v1/projects/{pid}/map")
     def read_map(pid: str, authorization: str | None = Header(None)):
@@ -365,11 +401,12 @@ def create_app(database_url: str | None = None) -> FastAPI:
             tree = extractive_draft(body.goal, source_paragraphs)
             validate_tree(tree, paragraphs_of(s, pid))
             draft = Draft(id=uid(), project_id=pid, base_revision=expected,
-                          payload={"map": tree, "generationMode": "extractive_demo"}, kind="generation")
+                          payload={"map": tree, "generationMode": "extractive_demo",
+                                   "selectionPolicy": EXTRACTIVE_SELECTION_POLICY}, kind="generation")
             job = Job(id=uid(), project_id=pid, kind="generation_sync_demo", status="completed", result_id=draft.id)
             s.add_all([draft, job])
             return record(s, user, f"POST:{pid}:generate", key, payload,
-                          {"jobId": job.id, "draftId": draft.id, "status": "completed", "generationMode": "extractive_demo"}, 202)
+                          {"jobId": job.id, "draftId": draft.id, "status": "completed", "generationMode": "extractive_demo", "selectionPolicy": EXTRACTIVE_SELECTION_POLICY}, 202)
 
     @app.get("/api/v1/jobs/{job_id}")
     def read_job(job_id: str, authorization: str | None = Header(None)):
@@ -476,8 +513,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
             p = get_project(s, pid, user)
             last = s.scalar(select(Change).where(Change.project_id == pid, Change.undone == False, Change.kind != "undo")
                             .order_by(Change.rev_after.desc()).limit(1))
-            if not last or last.rev_after != expected:
-                problem("NO_UNDO_AVAILABLE", "没有可安全撤销的最新变更", 409)
+            if not last or last.rev_after != expected or last.kind not in {"manual", "generation_demo", "patch_demo"}:
+                # Source deletion is intentionally irreversible in this API.
+                # Do not resurrect the map while its source paragraphs are gone.
+                problem("NO_UNDO_AVAILABLE", "最新变更无法安全撤销", 409)
             result = commit_map(s, p, p.map_json, last.before_json, expected, user, "undo")
             last.undone = True
             return record(s, user, f"POST:{pid}:undo", key, payload, result)

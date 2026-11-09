@@ -26,6 +26,11 @@ Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work;
 5. Verify README links and all source files exist on GitHub; CI green on the final head commit.
 6. Future gates are **not marked complete** on the strength of scaffold code alone.
 
+## Hardening update v0.3 (2026-11-09)
+
+- [Algorithm](ALGORITHM_OPTIMIZATION_V0.3.md) + [Backend](BACKEND_OPTIMIZATION_V0.3.md) + [verification](VERIFICATION_V0.3.md): malformed JSON 500 regression tests, sub-tree AI scope validation, source-add/delete revision audit, verified-claim invalidation, lexical source-balanced paragraph ranking and synthetic performance benchmark.
+- This is an incremental G0/G1/G2 **development hardening pass**, not full G1 (secure authentication/PDF worker), G2 (PostgreSQL/durable job) or G3/G4 (true LLM) completion.
+
 ## Next engineering changes in priority order
 
 - G1.1 replace dev token with real managed authentication + revocable sessions.

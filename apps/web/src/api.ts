@@ -1,11 +1,11 @@
-export type EvidenceRef = { sourceId: string; paragraphId: string; start: number; end: number; exactQuote: string; anchorStatus: 'anchored'|'invalid'|'unverified'|'source_deleted' };
+export type EvidenceRef = { sourceId: string; paragraphId: string; start: number; end: number; exactQuote: string; quoteSha256?: string; anchorStatus: 'anchored'|'invalid'|'unverified'|'source_deleted' };
 export type MapNode = { id: string; parentId: string|null; type: string; title: string; note?: string; origin: 'user'|'ai'; verification: 'unverified'|'verified_by_user'; evidenceRefs: EvidenceRef[]; sortOrder: number };
 export type MapDocument = { revision: number; rootId: string; nodes: MapNode[] };
 export type Project = { id: string; title: string; goal: string; revision: number; createdAt: string; updatedAt: string };
 export type Source = { id: string; title: string; kind: string; status: string; extractedCharCount: number };
 export type Paragraph = { id: string; text: string; sourceId: string; pageNo: number|null; ordinal: number };
 export type PatchProposal = { patchId: string; baseRevision: number; status: string; operation: string; generationMode: string; proposedOps: ({opId:string;op:string;parentId:string;node:{title:string;type:string}})[] };
-export type GenerationDraft = { draftId: string; baseRevision: number; status: string; generationMode: string; map: Omit<MapDocument,'revision'> };
+export type GenerationDraft = { draftId: string; baseRevision: number; status: string; generationMode: string; selectionPolicy?: string; map: Omit<MapDocument,'revision'> };
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status: number) { super(message); }
 }

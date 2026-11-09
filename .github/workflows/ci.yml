@@ -18,6 +18,10 @@ jobs:
         run: python -m pip install -e './apps/api[test]'
       - name: Syntax and unit/integration tests
         run: python -m compileall -q apps/api/tracemap && python -m pytest -q apps/api/tests
+      - name: Generated OpenAPI contract has no drift
+        run: python scripts/export_openapi.py --check
+      - name: Synthetic evidence retrieval benchmark (informational timing)
+        run: python scripts/benchmark_domain.py
       - name: Reject accidental production auth mode
         run: |
           python - <<'PY'

@@ -73,6 +73,16 @@ TraceMap/
 
 The v0.2 UI redesign is documented in [UI design system](docs/UI_DESIGN_SYSTEM.md). It is a real React/TypeScript implementation—not a generated mockup—and is tested with desktop/mobile Chromium screenshots in CI. The visual hierarchy keeps original evidence, user verification, and uncommitted AI/rule suggestions visibly distinct.
 
+## Backend and algorithm v0.3 hardening (2026-11-09)
+
+- [Algorithm/evidence retrieval spec](docs/ALGORITHM_OPTIMIZATION_V0.3.md): exact Unicode anchors, quote SHA-256, source-balanced goal relevance, protected subtree rules, synthetic evaluation limits.
+- [Backend transactions/security spec](docs/BACKEND_OPTIMIZATION_V0.3.md): strict payload validation, CAS/idempotency, 20-event metadata history, source lifecycle audit, verification invalidation and rollout blockers.
+- [Reproducible test report](docs/VERIFICATION_V0.3.md): red/green proof, adversarial API tests and synthetic microbenchmark.
+
+Implemented OpenAPI snapshot: [`packages/contracts/openapi.generated.json`](packages/contracts/openapi.generated.json); use `python scripts/export_openapi.py --check` to detect API drift.
+
+Run `python scripts/benchmark_domain.py` for the deterministic **lexical-only** microbenchmark. `GET /api/v1/projects/{pid}/history` returns 20 recent change metadata entries, without exposing raw source contents. Source removal currently **does not guarantee erasure of quotes already copied into maps/drafts/history snapshots**; do not claim production-grade deletion or publish the dev API publicly.
+
 ## Status & transparency
 
 | Area | State |
