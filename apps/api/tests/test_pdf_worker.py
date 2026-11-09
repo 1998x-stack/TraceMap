@@ -47,7 +47,7 @@ def test_pdf_parser_timeout_terminates_worker(monkeypatch):
         def close(self):
             pass
 
-    class Process:
+    class FakeProcess:
         def __init__(self, **_kwargs):
             self.alive = True
             self.terminated = False
@@ -63,17 +63,16 @@ def test_pdf_parser_timeout_terminates_worker(monkeypatch):
         def join(self, _timeout=None):
             pass
 
-    class Context:
+    class FakeContext:
         def __init__(self):
-            self.process = None
+            self.process = FakeProcess()
         def Pipe(self, duplex=False):
             assert duplex is False
             return Connection(), Connection()
-        def Process(self, **kwargs):
-            self.process = Process(**kwargs)
+        def Process(self, **_kwargs):
             return self.process
 
-    context = Context()
+    context = FakeContext()
     monkeypatch.setattr(pdf_worker.multiprocessing, "get_context", lambda _method: context)
     with pytest.raises(pdf_worker.PDFParseError) as timeout:
         pdf_worker.parse_pdf_isolated(b"%PDF-fake", timeout_seconds=0.01)
