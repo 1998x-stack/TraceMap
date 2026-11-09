@@ -87,8 +87,8 @@ Run `python scripts/benchmark_domain.py` for the deterministic **lexical-only** 
 
 | Area | State |
 | --- | --- |
-| Core domain + API unit/integration tests | **14 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626) |
-| React Flow interface | **Build passed; Chromium E2E 1 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42553780626) |
+| Core domain + API unit/integration tests | **27 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42567240816) |
+| React Flow interface | **Build passed; Chromium E2E 3 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42567240816) |
 | Real LLM generation and rich AI Patch | **Not implemented**; extractive/rule demo only |
 | External authentication + privacy controls | **Not implemented**; production blocked |
 | Isolated job worker + PostgreSQL + S3 | **Not implemented** |

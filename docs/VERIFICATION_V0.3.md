@@ -1,6 +1,6 @@
 # TraceMap — 后端/算法优化测试与证据 v0.3
 
-> 日期：2026-11-09。本文件只报告当前实际执行的检验；GitHub Actions 在最终提交之后的结果需以对应的 run 为准。
+> 日期：2026-11-09。**远端通过的基线：** [GitHub Actions 42567240816](https://github.com/1998x-stack/TraceMap/actions/runs/42567240816)，Python **27 passed**、Chromium **3 passed**、web-build **passed**；实际路由签名 19 路径 / 22 操作。当前结果是工程验证，不是生产/模型质量认证。
 
 ## 1. 测试方法：先复现再修复
 
