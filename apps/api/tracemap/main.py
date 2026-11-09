@@ -24,11 +24,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 
+from . import config  # noqa: F401  (loads .env before any TRACEMAP_* value is read — see config.py)
 from .db import Base, Project, Source, Paragraph, Change, Draft, Idempotency, Job, engine_for, session_factory, now
 from .core import (RuleError, uid, sha, canon, split_paragraphs, root_map,
                    validate_tree, verify_ref, apply_ops, degrade_source, extractive_draft,
                    markdown_export, MAX_FILE_BYTES, MAX_TOTAL_CHARS, MAX_SOURCES,
                    EXTRACTIVE_SELECTION_POLICY)
+from . import llm
 
 # Largest revision we accept from a client. Chosen to be far below the SQLite
 # signed-64-bit limit (the CAS update writes expected + 1) and at the JavaScript
@@ -246,7 +248,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "mode": "development", "generationProvider": "extractive_demo"}
+        config = llm.public_config()
+        return {"status": "ok", "mode": "development",
+                "generationProvider": llm.active_backend(),
+                "generationModel": config["model"],
+                "llmConfigured": config["llmConfigured"]}
 
     @app.get("/api/v1/projects")
     def list_projects(authorization: str | None = Header(None)):
@@ -425,29 +431,57 @@ def create_app(database_url: str | None = None) -> FastAPI:
         user, expected, key = owner(authorization), get_revision(if_match), require_key(idempotency_key)
         if body.language not in {"en", "zh-CN"} or len(set(body.sourceIds)) != len(body.sourceIds):
             problem("BAD_REQUEST", "语言或资料选择无效", 400)
-        with Session.begin() as s:
-            payload = body.model_dump() | {"revision": expected}
-            if (prev := replay(s, user, f"POST:{pid}:generate", key, payload)) is not None:
+        scope = f"POST:{pid}:generate"
+        payload = body.model_dump() | {"revision": expected}
+        # 1. Read-only prep: idempotency replay and source scoping. A write
+        #    transaction is never held across the (slow, external) provider call.
+        with Session() as s:
+            if (prev := replay(s, user, scope, key, payload)) is not None:
                 return prev
             p = get_project(s, pid, user)
             if p.revision != expected:
                 problem("REVISION_CONFLICT", "生成所基于的版本已经变化", 409)
-            source_paragraphs = {}
+            source_paragraphs: dict[str, list[dict]] = {}
+            source_titles: dict[str, str] = {}
             for sid in body.sourceIds:
                 source = s.scalar(select(Source).where(Source.project_id == pid, Source.id == sid, Source.status == "ready"))
                 if not source:
                     problem("NOT_FOUND", "所选来源不存在", 404)
+                source_titles[sid] = source.title
                 source_paragraphs[sid] = [{"id": x.id, "ordinal": x.ordinal, "text": x.text} for x in
                      s.scalars(select(Paragraph).where(Paragraph.source_id == sid).order_by(Paragraph.ordinal)).all()]
+            reference_paragraphs = paragraphs_of(s, pid)
+        # 2. Compute a read-only candidate draft (deterministic demo, or the
+        #    configured model when explicitly enabled). The model never writes.
+        if llm.llm_ready():
+            documents = [{"sourceId": sid, "title": source_titles[sid], "paragraphs": paras}
+                         for sid, paras in source_paragraphs.items()]
+            result = llm.draft_from_llm(body.goal, documents, reference_paragraphs, source_titles)
+            tree = result["tree"]
+            draft_meta = {"provider": result["provider"], "usage": result["usage"],
+                          "droppedEvidenceCount": result["droppedEvidenceCount"],
+                          "promptSha256": result["promptSha256"]}
+            job_kind = "generation_llm_sync"
+            response_meta = {"generationMode": "llm", "provider": result["provider"]}
+        else:
             tree = extractive_draft(body.goal, source_paragraphs)
-            validate_tree(tree, paragraphs_of(s, pid))
+            draft_meta = {"selectionPolicy": EXTRACTIVE_SELECTION_POLICY}
+            job_kind = "generation_sync_demo"
+            response_meta = {"generationMode": "extractive_demo", "selectionPolicy": EXTRACTIVE_SELECTION_POLICY}
+        validate_tree(tree, reference_paragraphs)
+        # 3. Persist the draft; the live map is unchanged until an explicit commit.
+        with Session.begin() as s:
+            if (prev := replay(s, user, scope, key, payload)) is not None:
+                return prev
+            p = get_project(s, pid, user)
+            if p.revision != expected:
+                problem("REVISION_CONFLICT", "生成所基于的版本已经变化", 409)
             draft = Draft(id=uid(), project_id=pid, base_revision=expected,
-                          payload={"map": tree, "generationMode": "extractive_demo",
-                                   "selectionPolicy": EXTRACTIVE_SELECTION_POLICY}, kind="generation")
-            job = Job(id=uid(), project_id=pid, kind="generation_sync_demo", status="completed", result_id=draft.id)
+                          payload={"map": tree, "generationMode": response_meta["generationMode"], **draft_meta}, kind="generation")
+            job = Job(id=uid(), project_id=pid, kind=job_kind, status="completed", result_id=draft.id)
             s.add_all([draft, job])
-            return record(s, user, f"POST:{pid}:generate", key, payload,
-                          {"jobId": job.id, "draftId": draft.id, "status": "completed", "generationMode": "extractive_demo", "selectionPolicy": EXTRACTIVE_SELECTION_POLICY}, 202)
+            return record(s, user, scope, key, payload,
+                          {"jobId": job.id, "draftId": draft.id, "status": "completed", **response_meta}, 202)
 
     @app.get("/api/v1/jobs/{job_id}")
     def read_job(job_id: str, authorization: str | None = Header(None)):
