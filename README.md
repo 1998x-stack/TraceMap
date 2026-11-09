@@ -2,7 +2,7 @@
 
 **Evidence-first AI research maps** · 证据可追溯的思维导图工作台
 
-> **Engineering prototype v0.2 UI iteration — LOCAL DEVELOPMENT ONLY.** The code here is not a production SaaS, does **not** call an LLM, and must not be published as an authenticated service. AI generation is an explicitly labelled deterministic extractive demo.
+> **Engineering prototype v0.4 scholarly workspace iteration — LOCAL DEVELOPMENT ONLY.** The code here is not a production SaaS and must not be published as an authenticated service. Generation is a deterministic extractive demo by default; an **optional** OpenAI-compatible LLM provider (off by default) can be enabled locally — see [LLM provider](docs/LLM_PROVIDER.md).
 
 **Product specification:** [PRD](https://github.com/1998x-stack/projects/blob/main/projects/knowledge/llm-xmind/reports/prd-mvp-v1.0.md) · [Architecture](https://github.com/1998x-stack/projects/tree/main/projects/knowledge/llm-xmind/design) · [Live test plan](docs/IMPLEMENTATION_PLAN.md).
 
@@ -75,6 +75,16 @@ TraceMap/
 
 The v0.2 UI redesign is documented in [UI design system](docs/UI_DESIGN_SYSTEM.md). It is a real React/TypeScript implementation—not a generated mockup—and is tested with desktop/mobile Chromium screenshots in CI. The visual hierarchy keeps original evidence, user verification, and uncommitted AI/rule suggestions visibly distinct.
 
+## Scholarly research interface & generation feedback v0.4
+
+See [independent sidebars and fullscreen canvas v0.5](docs/UI_LAYOUT_V0.5.md): the project rail, source library and evidence inspector collapse independently; the map panel supports native fullscreen with a keyboard-exitable focus-mode fallback.
+
+The latest React design uses warm archival paper, academic serif headings, restrained ink/green colors, source-index cards and precise manuscript-style evidence highlighting. See [design and behavior spec](docs/UI_ACADEMIC_GENERATION_V0.4.md). The CSS theme is isolated in `apps/web/src/academic-theme.css` and works without remote fonts.
+
+When generating a candidate map, a dedicated panel shows the **elapsed time and client-observed request phases** (waiting for backend, reading the returned draft). These are **not** server-side milestone telemetry or a completion percentage. Failed/slow requests surface explicit messages; candidates still need human confirmation and do not mutate the saved map.
+
+LLM candidates lacking an exact, selected-source anchor are now discarded instead of surfacing as uncited claims (see `GT-0024`). This protects source provenance, but does **not** prove the reasoning from a quote is factually true.
+
 ## Backend and algorithm v0.3 hardening (2026-11-09)
 
 - [Algorithm/evidence retrieval spec](docs/ALGORITHM_OPTIMIZATION_V0.3.md): exact Unicode anchors, quote SHA-256, source-balanced goal relevance, protected subtree rules, synthetic evaluation limits.
@@ -89,9 +99,10 @@ Run `python scripts/benchmark_domain.py` for the deterministic **lexical-only** 
 
 | Area | State |
 | --- | --- |
-| Core domain + API unit/integration tests | **27 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42567240816) |
-| React Flow interface | **Build passed; Chromium E2E 3 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42567240816) |
-| Real LLM generation and rich AI Patch | **Not implemented**; extractive/rule demo only |
+| Core domain + API unit/integration tests | **54 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42595375357) |
+| React Flow interface | **Build passed; Chromium E2E 12 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42595375357) |
+| Real LLM generation | **Optional, off by default** — OpenAI-compatible provider wired with server-side evidence grounding ([docs/LLM_PROVIDER.md](docs/LLM_PROVIDER.md)); extractive demo remains the default |
+| Rich AI Patch | **Not implemented**; rule-based question proposals only |
 | External authentication + privacy controls | **Not implemented**; production blocked |
 | Isolated job worker + PostgreSQL + S3 | **Not implemented** |
 | Production release / real Xmind import testing | **Not implemented** |

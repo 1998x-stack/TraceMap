@@ -27,6 +27,12 @@
 | Test commands broke when run outside repository root | [GT-0017](#gt-0017--relative-commands-and-unscoped-tmp-cleanup) |
 | Safety tests fail only when `TRACEMAP_*` is exported in the shell | [GT-0018](#gt-0018--safety-tests-depended-on-ambient-tracemap-variables) |
 | `crypto.randomUUID is not a function` (LAN / plain-HTTP origin) | [GT-0021](#gt-0021--cryptorandomuuid-is-not-a-function-on-a-plain-http-lan-origin) |
+| Explicitly empty environment value was overridden by `.env` on Linux | [GT-0026](#gt-0026--shell-dotenv-loader-overwrote-explicit-empty-environment-variables) |
+| LLM output still truncated after automatic retry | [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
+| LLM candidate has no valid evidence, but still appears in the map | [GT-0024](#gt-0024--model-claims-with-invalid-or-out-of-scope-anchors-survived) |
+| Candidate generation takes tens of seconds with no visible explanation | [GT-0025](#gt-0025--synchronous-generation-looked-frozen) |
+| `502 LLM_OUTPUT_TRUNCATED` after retry, or malformed model JSON | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) and [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
+| Markdown export hides node type / notes / verification | [GT-0023](#gt-0023--markdown-export-does-not-convey-node-type-notes-or-verification) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
 | HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
 | Test suite is slow (~40 s) | [GT-0011](#gt-0011--sqlite-ddlfsync-is-slow-on-this-host) |
@@ -59,6 +65,9 @@ Verified commits:
 | `784511c` | Private runtime permissions and gotchas record (verified baseline for this review). |
 | `1182bc1`, `771b3f4`, `52bfd20` | Independent Linux review: hermetic safety tests, storage-error contract, PDF coverage (GT-0018–GT-0020). |
 | `ebbec19` | LAN/plain-HTTP origin support: UUID fallback (GT-0021). |
+| `d2ba874` | Centralize configuration in `.env` / `.env.example`. |
+| `7efe4fd` | Optional grounded LLM provider (GT-0022). |
+| `8c6d7aa` | UI reflects the active generation provider. |
 
 ## 3. Most common errors (index)
 
@@ -86,6 +95,8 @@ Verified commits:
 | GT-0019 | Deployment guide left the shell in `apps/web` | Documentation | P2 |
 | GT-0020 | Locked SQLite returned an opaque non-JSON 500 | Backend/Reliability | P2 |
 | GT-0021 | `crypto.randomUUID` missing on a plain-HTTP LAN origin | Frontend/Deployment | P1 |
+| GT-0022 | Reasoning-model truncation broke LLM output | Backend/LLM | P2 |
+| GT-0027 | Truncation retry reused the same token budget | Backend/LLM | P1 |
 
 ## 5. Open issues / roadmap
 
@@ -96,6 +107,7 @@ Verified commits:
 | GT-0009 | Swagger UI assets load from a CDN | Frontend/Docs | P3 | Cosmetic; affects offline `/docs` only |
 | GT-0011 | SQLite DDL/fsync is slow on this host | Environment | P3 | Host disk characteristic; not application code |
 | GT-0017 | Relative commands and unscoped /tmp cleanup | Documentation | P2 | Guide corrected; independent cold-start now performed by this review (see GT-0019) |
+| GT-0023 | Markdown export hides node type, notes and verification | Export/Frontend | P3 | Needs a format decision (Xmind-clean headings vs richer labels) |
 
 ## 5.1 Deployment review follow-up (PR #6)
 
@@ -1011,3 +1023,273 @@ becomes moot, but the fallback stays harmless. Any future `crypto.subtle` usage
 would have the same secure-context constraint — plan to terminate TLS for LAN use.
 
 **Links:** commit `ebbec19`.
+
+## GT-0022 — Reasoning-model truncation broke LLM generation intermittently
+
+**Status:** RESOLVED
+**Class:** Backend / LLM provider
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** `iagent/standard` (OpenAI-compatible reasoning model), `.env`
+`TRACEMAP_GENERATION_MODE=llm`, first real end-to-end generate call.
+
+**Symptoms:** `POST /api/v1/projects/{pid}/generate` intermittently returned
+`502 LLM_INVALID_OUTPUT · 模型输出不是合法 JSON` after ~40 s, while other calls
+succeeded. The draft was never created.
+
+**Minimal reproduction:**
+```bash
+# repeat a real generate; roughly 1 in 3 attempts hit max_tokens
+for i in 1 2 3; do curl -sS -X POST .../generate -H 'Authorization: Bearer dev-<name>' \
+  -H 'If-Match: "rev-1"' -H 'Idempotency-Key: gt22-'$i'00' -d '{...}'; echo; done
+```
+
+**Expected:** a deterministic success, or a clear, diagnosable failure.
+
+**Actual:** the model spent the entire `max_tokens` (4096) budget on *hidden
+reasoning* (`finish_reason=length`), so the JSON object was cut off mid-string:
+`Unterminated string starting at ... char 838`. The adapter reported it as a
+generic "not valid JSON", hiding the real cause.
+
+**Root cause:** `apps/api/tracemap/llm.py::_chat` ignored `finish_reason` and
+defaulted `max_tokens` to 4096 — too small for a reasoning model. Measured:
+attempt 1 `finish=length len=848` (fail), attempts 2–3 `finish=stop` (ok).
+
+**Fix:** detect `finish_reason == "length"` and raise `LLM_OUTPUT_TRUNCATED`
+(502, retryable) instead of a misleading parse error; retry once automatically
+(in `draft_from_llm`); raise the default budget to `TRACEMAP_LLM_MAX_TOKENS=8192`.
+
+**Files:** `apps/api/tracemap/llm.py`; `.env` / `.env.example`.
+
+**Related tests:** `test_chat_detects_truncated_output`,
+`test_draft_from_llm_retries_truncation`.
+
+**Verification:** after the fix a real generate succeeded (~33 s, 10 nodes,
+**0** dropped anchors, 4646 tokens) and the regression tests pass
+(`python -m pytest -q apps/api/tests/test_llm.py` → 9 passed).
+
+**Prevention:** always inspect `finish_reason`; keep a generous output budget for
+reasoning models; retry once before surfacing an error.
+
+**Links:** `docs/LLM_PROVIDER.md`; commit `7efe4fd`; follow-up in PR #7.
+
+**Follow-up — second occurrence (same day).** The error resurfaced on a real
+5580-character Markdown source. Measurement showed the model spent the *entire*
+budget on hidden reasoning and returned **no content at all**, even at the
+provider's documented maximum of 16384 tokens (`finish_reason=length,
+content_len=0`) — so raising `max_tokens` cannot fix it. The real cause was an
+**open-ended prompt**. Tightening the system prompt (JSON only, "do not write any
+analysis/reasoning", at most 12 nodes, title ≤60 / note ≤40 chars, and demanding
+the JSON immediately as the last user line) made the same document succeed:
+`finish=stop`, ~1.6–4.0k completion tokens, 12 grounded nodes, **0** dropped
+anchors. New constants `MAX_LLM_NODES=12`, `MAX_LLM_NOTE_CHARS=240`; the error
+message now states the model returned nothing because reasoning exhausted the
+budget. Regression tests: `test_system_prompt_forces_concise_json_only_output`,
+`test_build_tree_caps_node_count_and_note_length`.
+
+---
+
+## GT-0023 — Markdown export does not convey node type, notes or verification
+
+**Status:** OPEN (product decision required)
+**Class:** Export / Frontend
+**Severity:** P3
+**First seen:** 2026-11-09
+**Environment:** reviewed on a real LLM draft committed to the map.
+
+**Symptoms:** in `GET /export?format=md`, every non-topic node renders as an
+identical `###` heading. A `counterpoint`, a `question`, an `evidence` node and a
+`claim` are indistinguishable, node `note` text is absent, and a node's
+`verified_by_user` state is not shown anywhere in the file.
+
+**Minimal reproduction:**
+```bash
+curl -sS "$B/api/v1/projects/$PID/export?format=md" -H "$AUTH"
+# headings are all "### <title>"; only the evidence appendix carries anchorStatus
+```
+
+**Expected (arguably):** a reader of the export can tell node types and which
+nodes a human verified.
+
+**Actual:** `core.markdown_export` emits heading levels for hierarchy plus an
+evidence appendix (source title · paragraph id prefix · `anchorStatus` ·
+verbatim quote). This keeps headings clean for Xmind Markdown import — a
+deliberate trade-off — but loses type/verification/note.
+
+**Root cause:** by design in `core.markdown_export`; the format targets Xmind
+compatibility rather than full-fidelity round-trip.
+
+**Fix:** none yet. Options: (a) append a compact `— [type · verification]` suffix
+in the appendix lines only; (b) add an opt-in `format=md-full`; (c) leave as is.
+Changing headings risks polluting Xmind node text.
+
+**Files:** `apps/api/tracemap/core.py` (`markdown_export`).
+
+**Related tests:** `apps/api/tests/test_core.py::test_degrade_deleted_source_and_export`,
+`apps/api/tests/test_api.py::test_export_md_and_json`, `scripts/smoke-test.sh` md check.
+
+**Verification:** sample export reviewed (PR #6 comment). Not a regression.
+
+**Prevention / next step:** decide the format; if labels are added, extend the
+export tests and keep existing heading substrings stable.
+
+**Links:** PR #6; `docs/LLM_PROVIDER.md`.
+
+---
+
+## GT-0024 — Model claims with invalid or out-of-scope anchors survived
+
+**Status:** RESOLVED — tested in GitHub CI on Ubuntu (not a private-server validation)
+**Class:** Algorithm / Evidence integrity
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #7 `llm.py::build_tree` at `701cb335`.
+
+**Symptoms:** a model-produced claim with nonexistent `paragraphId`, empty
+`exactQuote` or an out-of-scope source can survive as a candidate node with
+`evidenceRefs: []`. A source within the same project but not supplied in
+`sourceIds` can also pass the full-project paragraph index check.
+
+**Minimal reproduction:** feed `build_tree` a valid first proposal, then
+a second claim with a forged paragraph or a `sourceId` not in `source_titles`.
+Inspect the candidate titles; before the fix, the unsupported claim remained.
+
+**Expected:** only model claims that cite a verbatim quote from an explicitly
+selected source should appear as candidate claims.
+**Actual (before):** bad anchors were dropped, but their claim nodes remained.
+**Root cause:** validation cleared refs without rejecting the node, and
+the evidence lookup was broader than the selected source scope.
+**Fix:** all model-proposed nodes must have an anchored, selected-source
+reference; count and skip malformed/out-of-scope candidates. If none survive,
+return `LLM_INVALID_OUTPUT` without mutating the saved map.
+**Files:** `apps/api/tracemap/llm.py`, `apps/api/tests/test_llm.py`.
+**Tests:** test_build_tree_keeps_valid_refs_and_drops_hallucinated,
+test_build_tree_excludes_valid_anchor_from_unselected_source,
+test_all_ungrounded_model_candidates_fail_closed.
+**Verification:** CI pending; no live LLM provider call is used in these
+deterministic tests.
+**Prevention:** fail closed on missing evidence; keep selected-source scopes
+in the model response validation layer.
+**Limitation:** an exact quote only proves textual presence, not that the
+candidate's assertion is logically entailed by the quote.
+
+## GT-0025 — Synchronous generation looked frozen
+
+**Status:** RESOLVED — tested in GitHub CI on Ubuntu (not a private-server validation)
+**Class:** Frontend / Generation UX
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** PR #7 synchronous `/generate` endpoint; real model calls
+reported around 33 seconds, with default upstream timeout up to 180 seconds
+and a single retry for truncated output.
+
+**Symptoms:** the interface showed only generic `正在处理…`, while the
+candidate draft request was blocked awaiting a slow response.
+
+**Minimal reproduction:** use Playwright to delay the `/generate` response
+for >2 seconds; observe the prior map button/header without any elapsed time
+or granular request/wait/draft retrieval feedback.
+
+**Expected:** the user sees a truthful elapsed timer, waiting state and
+an explicit explanation that the model may take time.
+**Actual (before):** no generation-specific progress status.
+**Root cause:** a single global busy boolean masked synchronous network work.
+**Fix:** `GenerationProgress` component with explicit client-observed
+waiting/reading phases, elapsed time, indeterminate (non-percent) indicator,
+slow request explanation, duplicate-request lock and full cleanup on errors.
+**Files:** `apps/web/src/App.tsx`,
+`apps/web/src/components/GenerationProgress.tsx`,
+`apps/web/src/academic-theme.css`,
+`apps/web/e2e/generation-progress.spec.ts`.
+**Tests:** delayed success, upstream error, LLM-label and 390px layout
+Playwright cases.
+**Verification:** [CI run #42591405795](https://github.com/1998x-stack/TraceMap/actions/runs/42591405795) completed with 50 Python and 9 Chromium tests passed.
+**Prevention:** do not invent server-side completion percent. A future durable
+job must report real states through polling or authorized events.
+**Limitation:** the current client has no precise backend progress, cancellation
+or cross-reload recovery; those require a queued job architecture.
+
+See `docs/UI_ACADEMIC_GENERATION_V0.4.md` for design and behavior contracts.
+
+---
+
+## GT-0026 — Shell dotenv loader overwrote explicit empty environment variables
+
+**Status:** RESOLVED — tested in GitHub CI (not a private-server audit)
+**Class:** Linux Deployment / Configuration consistency
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #7 `scripts/dev-common.sh` vs `tracemap/config.py`.
+
+**Symptoms:** with `TRACEMAP_LLM_API_KEY=''` explicitly exported and a key
+specified in `.env`, the Python loader preserves the empty value, but the
+Bash launcher imported the file value instead. Whitespace in key values also
+had inconsistent handling. This can unexpectedly enable a configured provider.
+
+**Minimal reproduction:** source `scripts/dev-common.sh` with a temporary
+`TRACEMAP_ENV_FILE`, an exported empty `TRACEMAP_TEST_EMPTY`, and a nonempty
+value for that key in the file. Before this change, the shell value was
+overwritten even though the variable was explicitly set.
+
+**Expected:** explicit operator environment variables (including empty ones)
+always take precedence over the .env file, exactly as in `config.py`.
+**Actual (before):** `[[ -z "${!key:-}" ]]` treated an empty but defined
+variable as absent.
+**Root cause:** the shell loader checked value emptiness rather than whether
+the variable was set, and omitted Python's `value.strip()` behavior.
+**Fix:** switch to `[[ ! -v "$key" ]]` and trim value whitespace before
+removing matched quotes.
+**Files:** `scripts/dev-common.sh`, `apps/api/tests/test_config.py`.
+**Related tests:** `test_shell_dotenv_respects_explicit_empty_env_and_trims_values`.
+**Verification:** [CI #42592992349](https://github.com/1998x-stack/TraceMap/actions/runs/42592992349) — 51 Python tests and 8 Linux deployment safety tests passed, including this cross-language precedence regression.
+**Prevention:** retain cross-language configuration parity tests; never log
+actual `TRACEMAP_LLM_API_KEY` values.
+
+**Scope:** this prevents accidental overwrite at shell startup. It does not
+replace production secret management or a security audit of arbitrary
+operator-configured LLM URLs.
+
+---
+
+## GT-0027 — Truncation retry reused the same token budget
+
+**Status:** RESOLVED — verified in GitHub CI (Linux runner)
+**Class:** Backend / LLM reliability and cost control
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #7 LLM provider adapter; OpenAI-compatible reasoning models.
+
+**Symptoms:** the provider returns finish_reason=length, TraceMap reports
+LLM_OUTPUT_TRUNCATED, retries once, but the second request has exactly the
+same max_tokens and may fail in the same way. A larger configured default
+alone is not a robust recovery strategy when the current model/provider needs
+more completion budget.
+
+**Minimal reproduction:** set TRACEMAP_LLM_MAX_TOKENS=4096; inject a transport
+that records the budget and raises LLM_OUTPUT_TRUNCATED on the first call.
+Before the fix the recorded sequence was [4096, 4096].
+
+**Expected:** one bounded retry with a larger completion budget; if the ceiling
+is still insufficient, return a useful actionable error and do not create a
+partial draft.
+**Actual (before):** retry reused the initial budget and repeated the same
+failure.
+**Root cause:** the retry loop repeated the transport call without changing
+config["max_tokens"].
+**Fix:** first attempt defaults to 8192; after finish_reason=length, retry
+once with up to 2× the initial budget, capped by
+TRACEMAP_LLM_RETRY_MAX_TOKENS (default 16384). If the provider truncates
+again, or the configured ceiling equals the initial budget, stop and return
+LLM_OUTPUT_TRUNCATED with the reached budget and configuration guidance.
+The prompt also limits output to 16 concise nodes, 240-character notes and
+1200-character exact quotes to reduce avoidable output volume.
+**Files:** apps/api/tracemap/llm.py, apps/api/tests/test_llm.py,
+.env.example, docs/LLM_PROVIDER.md.
+**Tests:** token escalation, custom ceiling, ceiling exhaustion and no
+same-budget retry.
+**Verification:** [CI #42595375357](https://github.com/1998x-stack/TraceMap/actions/runs/42595375357) passed 54 Python tests, 12 Chromium E2E tests, frontend build, 31 Linux smoke checks and 8 restart checks.
+**Prevention:** use the smallest adequate first budget and an explicit,
+provider-compatible retry ceiling; monitor actual usage and costs.
+**Limitation:** the provider's context/output ceiling still applies. If it
+rejects the larger budget, configure a supported ceiling or reduce the selected
+source scope. A token retry is bounded but can increase request cost.

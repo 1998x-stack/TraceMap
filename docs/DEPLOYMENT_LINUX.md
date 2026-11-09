@@ -170,12 +170,25 @@ Warnings — read before doing this:
 - The API port `8000` and `/docs` stay loopback-only; a host firewall (e.g.
   `ufw`) may still block inbound `5173`.
 
-## 5. Environment variables & data paths
+## 5. Configuration, environment variables & data paths
+
+**All settings live in the repository `.env` file** (template: `.env.example`).
+Copy it and edit:
+
+```bash
+cp .env.example .env && chmod 600 .env    # .env is git-ignored; never commit secrets
+```
+
+`.env` is read by the API (`apps/api/tracemap/config.py`), and sourced by the
+lifecycle scripts. **Real environment variables always win**, and
+`TRACEMAP_DOTENV=0` ignores the file entirely (the tests, the Playwright harness
+and the isolated smoke workflow set this so they never reach a real model).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `TRACEMAP_ENV` | `development` | Must be `development`; any other value makes the API refuse to start. |
-| `TRACEMAP_DATABASE_URL` | `sqlite:///./tracemap-dev.db` | SQLAlchemy URL. **Set it to an absolute path** in any scripted use. |
+| `TRACEMAP_DOTENV` | `1` | `0` ignores `.env` (hermetic tests). |
+| `TRACEMAP_DATABASE_URL` | app: `sqlite:///./tracemap-dev.db`; scripts derive `$TRACEMAP_RUNTIME_DIR/data/tracemap-dev.db` | SQLAlchemy URL. **Absolute path required** in any scripted use. |
 | `TRACEMAP_API_HOST` / `TRACEMAP_API_PORT` | `127.0.0.1` / `8000` | API bind address/port. |
 | `TRACEMAP_WEB_HOST` / `TRACEMAP_WEB_PORT` | `127.0.0.1` / `5173` | Vite bind address/port. |
 | `TRACEMAP_RUNTIME_DIR` | `~/tracemap-runtime` | Root for `pids/`, `logs/`, `data/`. |
@@ -184,6 +197,24 @@ Warnings — read before doing this:
 | `TRACEMAP_E2E_API_PORT` / `TRACEMAP_E2E_WEB_PORT` | `8010` / `5273` | Isolated E2E ports. |
 | `TRACEMAP_E2E_DATABASE_URL` | unique temp file | Isolated E2E database. Setting it is **rejected**. |
 | `TRACEMAP_SQLITE_TIMEOUT` | `20` | Seconds a SQLite connection waits for a lock before failing (`0` = fail fast; see GT-0020). |
+| `TRACEMAP_GENERATION_MODE` | `extractive` | `extractive` (offline demo) or `llm` (real model). |
+| `TRACEMAP_LLM_BASE_URL` | `https://iagent.iauto.com/v1` | OpenAI-compatible base URL. |
+| `TRACEMAP_LLM_MODEL` | `iagent/standard` | Model id. |
+| `TRACEMAP_LLM_TIMEOUT` | `180` | Provider request timeout (seconds). |
+| `TRACEMAP_LLM_MAX_TOKENS` | `8192` | Output budget (reasoning models need a large one — GT-0022). |
+| `TRACEMAP_LLM_API_KEY` / `TRACEMAP_LLM_API_KEY_FILE` | – / `~/.config/ai-credentials/iauto_api_key` | Key, inline or from a `600` file. Never logged or returned. |
+
+### Generation backends
+
+- **`extractive` (default):** deterministic lexical demo, offline, no key. Labelled
+  `extractive_demo`.
+- **`llm`:** calls the configured OpenAI-compatible endpoint and returns a
+  grounded **candidate** draft (human commit still required). See
+  [`LLM_PROVIDER.md`](LLM_PROVIDER.md) for grounding/safety, the error contract
+  and the limitations. `/health` reports the active provider and `llmConfigured`.
+
+> **Do not put real or sensitive documents into LLM mode.** The text is sent to a
+> third-party endpoint. Use synthetic data unless you have approved the provider.
 
 Default data paths on the reference host:
 
@@ -214,7 +245,7 @@ the top of `api.log` shows why (usually `TRACEMAP_ENV` or the port).
 ## 7. Tests & browser tests
 
 ```bash
-# backend contract + unit/integration (34 tests)
+# backend contract + unit/integration (46 tests)
 source apps/api/.venv/bin/activate
 python -m compileall -q apps/api/tracemap
 python -m pytest -q apps/api/tests
@@ -283,8 +314,9 @@ Never delete `~/tracemap-runtime/data/tracemap-dev.db` to "make tests pass".
 | Check | Command | Result |
 | --- | --- | --- |
 | Python syntax | `python -m compileall -q apps/api/tracemap` | OK |
-| Backend tests | `python -m pytest -q apps/api/tests` | **34 passed** (1 deprecation warning, GT-0008) |
+| Backend tests | `python -m pytest -q apps/api/tests` | **46 passed** (1 deprecation warning, GT-0008) |
 | Deployment safety tests | `python -m unittest discover -s scripts/tests -p 'test_*.py'` | **8 passed** |
+| LLM adapter tests | `python -m pytest -q apps/api/tests/test_llm.py` | **9 passed** (no network, GT-0022) |
 | OpenAPI contract | `python scripts/export_openapi.py --check` | **22 operations / 19 paths OK** |
 | Benchmark | `python scripts/benchmark_domain.py` | median **3.1 ms**, p95 **4.0 ms**, 21 nodes |
 | Frontend build | `npm run build` | **passed** |
@@ -297,8 +329,8 @@ Never delete `~/tracemap-runtime/data/tracemap-dev.db` to "make tests pass".
 | Locked SQLite | POST with an exclusive file lock held | `503 STORAGE_BUSY`, `retryable=true`, no internals (GT-0020) |
 
 Baseline commit `58497c2` (27 tests, 3 E2E) → corrected tree after the
-independent review of `784511c` (34 backend tests, 8 deployment safety tests,
-5 E2E). See §12 for the cold-start reproduction record.
+independent review of `784511c` plus the `.env`/LLM work (46 backend tests,
+8 deployment safety tests, 5 E2E). See §12 for the cold-start reproduction record.
 
 ## 10. FAQ
 

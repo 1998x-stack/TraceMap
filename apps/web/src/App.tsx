@@ -5,10 +5,11 @@ import {
 } from '@xyflow/react';
 import {
   Api,ApiError,type Project,type Source,type MapDocument,type MapNode,
-  type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal,
+  type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal,type Health,
 } from './api';
 import {layout,sliceCodepoints} from './layout';
 import ResearchNodeCard, {type ResearchFlowNode} from './components/ResearchNode';
+import GenerationProgress, {type GenerationPhase} from './components/GenerationProgress';
 
 const api=new Api('dev-alice');
 const nodeTypes={research:ResearchNodeCard};
@@ -18,6 +19,10 @@ const kindSymbol:Record<string,string>={text:'T',markdown:'M',pdf:'P'};
 
 function getError(error:unknown){
   return error instanceof ApiError?`${error.code} · ${error.message}`:error instanceof Error?error.message:String(error);
+}
+function savedLayoutPreference(key:string){
+  try {return window.localStorage.getItem(key)==='1';}
+  catch {return false;}
 }
 function dateLabel(value:string){
   try {return new Date(value).toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'});}
@@ -65,13 +70,22 @@ export default function App(){
   const [patch,setPatch]=useState<PatchProposal|null>(null);
   const [accepted,setAccepted]=useState<Set<string>>(new Set());
   const [busy,setBusy]=useState(false);
+  const [generation,setGeneration]=useState<null|{phase:GenerationPhase; mode:'llm'|'extractive'; sourceCount:number; startedAt:number}>(null);
+  const generationLock=useRef(false);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
+  const [health,setHealth]=useState<Health|null>(null);
   const [editTitle,setEditTitle]=useState('');
   const [newChild,setNewChild]=useState('');
   const [panel,setPanel]=useState<'detail'|'source'>('detail');
   const [search,setSearch]=useState('');
   const [composerOpen,setComposerOpen]=useState(true);
+  const [navCollapsed,setNavCollapsed]=useState(()=>savedLayoutPreference('tracemap.navCollapsed'));
+  const [sourceCollapsed,setSourceCollapsed]=useState(()=>savedLayoutPreference('tracemap.sourceCollapsed'));
+  const [inspectorCollapsed,setInspectorCollapsed]=useState(()=>savedLayoutPreference('tracemap.inspectorCollapsed'));
+  const [canvasFullscreen,setCanvasFullscreen]=useState(false);
+  const fullscreenFallback=useRef(false);
+  const mapPanelRef=useRef<HTMLElement|null>(null);
   const sourceRequest=useRef(0);
   const modalRef=useRef<HTMLDivElement|null>(null);
   const canvasFlow=useRef<ReactFlowInstance<ResearchFlowNode,Edge>|null>(null);
@@ -86,6 +100,33 @@ export default function App(){
     setPanel('detail');setLoadingSource(false);
   },[]);
   useEffect(()=>{refreshList().catch(e=>setError(getError(e)));},[refreshList]);
+  useEffect(()=>{api.health().then(setHealth).catch(()=>{});},[]);
+  useEffect(()=>{
+    try {
+      localStorage.setItem('tracemap.navCollapsed',navCollapsed?'1':'0');
+      localStorage.setItem('tracemap.sourceCollapsed',sourceCollapsed?'1':'0');
+      localStorage.setItem('tracemap.inspectorCollapsed',inspectorCollapsed?'1':'0');
+    } catch { /* Private browsing may disable storage; in-memory controls still work. */ }
+  },[navCollapsed,sourceCollapsed,inspectorCollapsed]);
+  useEffect(()=>{
+    const syncFullscreen=()=>{
+      const native=document.fullscreenElement===mapPanelRef.current;
+      if(native)fullscreenFallback.current=false;
+      setCanvasFullscreen(native||fullscreenFallback.current);
+    };
+    const escapeFallback=(event:KeyboardEvent)=>{
+      if(event.key==='Escape'&&fullscreenFallback.current){
+        fullscreenFallback.current=false;
+        setCanvasFullscreen(false);
+      }
+    };
+    document.addEventListener('fullscreenchange',syncFullscreen);
+    window.addEventListener('keydown',escapeFallback);
+    return()=>{
+      document.removeEventListener('fullscreenchange',syncFullscreen);
+      window.removeEventListener('keydown',escapeFallback);
+    };
+  },[]);
   useEffect(()=>{
     if(!draft&&!patch)return;
     const previous=document.activeElement instanceof HTMLElement?document.activeElement:null;
@@ -102,6 +143,7 @@ export default function App(){
   const outline=useMemo(()=>tree?outlineTree(tree):[],[tree]);
   const verifiedCount=tree?.nodes.filter(n=>n.verification==='verified_by_user').length??0;
   const anchoredCount=tree?.nodes.filter(n=>n.evidenceRefs.some(r=>r.anchorStatus==='anchored')).length??0;
+  const llmActive=health?.generationProvider==='llm';
   const filteredProjects=projects.filter(p=>p.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const sourceChars=sources.reduce((sum,s)=>sum+s.extractedCharCount,0);
   useEffect(()=>{
@@ -141,14 +183,14 @@ export default function App(){
   function inspectSource(sourceId:string,ref:EvidenceRef|null=null){
     if(!active)return;
     const request=++sourceRequest.current;
-    setPanel('source');setInspectedSourceId(sourceId);setOpenedRef(ref);
+    setPanel('source');setInspectorCollapsed(false);setInspectedSourceId(sourceId);setOpenedRef(ref);
     setParagraphs([]);setLoadingSource(true);
     api.paragraphs(active.id,sourceId).then(result=>{
       if(request===sourceRequest.current)setParagraphs(result.items);
     }).catch(e=>{if(request===sourceRequest.current)setError(getError(e));})
       .finally(()=>{if(request===sourceRequest.current)setLoadingSource(false);});
   }
-  const nodeClick:NodeMouseHandler=(_e,node)=>{setSelectedId(node.id);setPanel('detail');setOpenedRef(null);};
+  const nodeClick:NodeMouseHandler=(_e,node)=>{setSelectedId(node.id);setPanel('detail');setOpenedRef(null);setInspectorCollapsed(false);};
   const inspectedSource=sources.find(s=>s.id===inspectedSourceId);
   const citedParagraph=openedRef?paragraphs.find(p=>p.id===openedRef.paragraphId):null;
   const highlight=openedRef&&citedParagraph?sliceCodepoints(citedParagraph.text,openedRef.start,openedRef.end):null;
@@ -168,18 +210,67 @@ export default function App(){
       setSourceText('');setSourceTitle('');await reload();
     },'资料已解析并保存');
   };
+  const toggleCanvasFullscreen=async()=>{
+    const element=mapPanelRef.current;
+    if(!element)return;
+    if(canvasFullscreen){
+      if(document.fullscreenElement===element){
+        try {await document.exitFullscreen();}
+        catch {return;}
+      }else{
+        fullscreenFallback.current=false;
+        setCanvasFullscreen(false);
+      }
+      return;
+    }
+    if(typeof element.requestFullscreen==='function'){
+      try {
+        await element.requestFullscreen();
+        fullscreenFallback.current=false;
+        setCanvasFullscreen(true);
+        return;
+      } catch { /* Use the CSS focus mode when browser fullscreen is unavailable. */ }
+    }
+    fullscreenFallback.current=true;
+    setCanvasFullscreen(true);
+  };
+
   const generate=()=>{
-    if(!active||!tree)return;
-    void run(async()=>{
-      const job=await api.generate(active.id,tree.revision,active.goal||active.title,sources.map(x=>x.id));
-      setDraft(await api.getDraft(active.id,job.draftId));
-    },'已生成候选草稿，请审阅后决定是否应用');
+    if(!active||!tree||busy||generationLock.current||sources.length===0)return;
+    // Immediate ref lock prevents two requests before React commits busy=true.
+    generationLock.current=true;
+    const pid=active.id, revision=tree.revision;
+    setBusy(true);setError('');setNotice('');
+    setGeneration({phase:'waiting',mode:llmActive?'llm':'extractive',sourceCount:sources.length,startedAt:Date.now()});
+    void (async()=>{
+      try {
+        const job=await api.generate(pid,revision,active.goal||active.title,sources.map(x=>x.id));
+        setGeneration(previous=>previous?{...previous,phase:'reading'}:null);
+        const proposal=await api.getDraft(pid,job.draftId);
+        setDraft(proposal);
+        setNotice('候选草稿已生成；请核对证据后再决定是否替换正式地图。');
+      } catch(err) {
+        setError(getError(err));
+        if(err instanceof ApiError&&err.status===409){
+          const latest=await api.map(pid).catch(()=>null);
+          if(latest)setTree(latest);
+          setNotice('服务器版本已变化，生成未提交。请检查最新地图并重新审阅。');
+        }
+      } finally {
+        generationLock.current=false;
+        setGeneration(null);
+        setBusy(false);
+      }
+    })();
   };
 
   return <div className="workspace">
-    <aside className="rail" aria-label="研究项目导航">
+    <aside className={'rail '+(navCollapsed?'is-collapsed':'')} aria-label="研究项目导航">
       <div className="brand"><div className="brand-icon" aria-hidden="true"><span className="brand-orbit">◎</span></div>
         <div><strong>TraceMap<span className="brand-period">.</span></strong><small>EVIDENCE WORKSPACE</small></div>
+        <button className="rail-toggle" type="button" aria-label={navCollapsed?'展开项目导航':'折叠项目导航'}
+          aria-expanded={!navCollapsed} title={navCollapsed?'展开项目导航':'折叠项目导航'}
+          onClick={()=>setNavCollapsed(value=>!value)}>{navCollapsed?'›':'‹'}</button>
       </div>
       <div className="rail-section"><div className="rail-label">YOUR WORKSPACE <span className="rail-count">{projects.length.toString().padStart(2,'0')}</span></div>
         <div className="project-search-wrap"><span aria-hidden="true">⌕</span><input aria-label="搜索项目" placeholder="搜索研究项目" value={search} onChange={e=>setSearch(e.target.value)}/></div>
@@ -187,6 +278,7 @@ export default function App(){
           {filteredProjects.length===0?<div className="rail-empty">{projects.length===0?'还没有研究项目':'未找到符合条件的项目'}</div>:
             filteredProjects.map(p=><button key={p.id} type="button" disabled={busy}
               className={'project-link '+(p.id===active?.id?'active':'')}
+              aria-label={'打开项目：'+p.title} title={p.title}
               aria-current={p.id===active?.id?'page':undefined}
               onClick={()=>void run(()=>load(p),'已载入研究项目')}>
               <span className="project-glyph" aria-hidden="true">◈</span>
@@ -222,7 +314,9 @@ export default function App(){
           </>}
         </div>
       </header>
-      <div className="dev-banner"><span className="dev-banner-label">DEVELOPMENT PREVIEW</span><span>规则型原文摘录演示 · <b>没有连接真实 LLM</b> · 仅限本机开发，勿上传敏感信息</span></div>
+      <div className="dev-banner"><span className="dev-banner-label">DEVELOPMENT PREVIEW</span><span>{llmActive
+        ? <>已连接真实 LLM（<b>{health?.generationModel||'iagent/standard'}</b>）· 候选内容必须人工确认 · 仅限本机开发，勿上传敏感信息</>
+        : <>规则型原文摘录演示 · <b>没有连接真实 LLM</b> · 仅限本机开发，勿上传敏感信息</>}</span></div>
       {(error||notice)&&<div role={error?'alert':'status'} className={'feedback '+(error?'bad':'good')}>
         <span className="feedback-icon" aria-hidden="true">{error?'!':'✓'}</span><span>{error||notice}</span>
         <button type="button" onClick={()=>{setError('');setNotice('');}} aria-label="关闭提示">×</button></div>}
@@ -230,15 +324,20 @@ export default function App(){
       {!active||!tree ? <section className="welcome">
         <div className="welcome-glow" aria-hidden="true"><div className="glow-ring ring-one"/><div className="glow-ring ring-two"/><div className="glow-core">◎</div></div>
         <div className="welcome-content">
-          <div className="eyebrow"><span className="eyebrow-line"/> RESEARCH INTELLIGENCE · V0.2</div>
+          <div className="eyebrow"><span className="eyebrow-line"/> RESEARCH NOTEBOOK · SCHOLARLY EDITION</div>
           <h1>从信息，到结构。<br/><span>从观点，到证据。</span></h1>
           <p>将零散资料转化为可编辑、可溯源的思维导图。<br/>每一条证据有出处，每一次修改由你决定。</p>
           <div className="welcome-instruction"><span className="welcome-arrow">↖</span><span>从左侧创建一个研究项目，即可开始。</span></div>
           <div className="welcome-stages"><div><strong>01</strong><span>收集资料</span><small>源头可追溯</small></div><div><strong>02</strong><span>组织论点</span><small>结构一目了然</small></div><div><strong>03</strong><span>人工审阅</span><small>修改始终可控</small></div></div>
         </div>
-      </section> : <div className="studio">
-        <section className="source-panel" aria-label="研究资料">
-          <div className="panel-head"><div><div className="eyebrow">01 / KNOWLEDGE BASE</div><h2>研究资料 <span className="panel-counter">{sources.length}/5</span></h2></div><span className="panel-head-symbol" aria-hidden="true">▤</span></div>
+      </section> : <div className={'studio'+(sourceCollapsed?' source-collapsed':'')+(inspectorCollapsed?' inspector-collapsed':'')}>
+        <section className={'source-panel'+(sourceCollapsed?' is-collapsed':'')} aria-label="研究资料">
+          {sourceCollapsed?<button className="sidebar-expand-tab" type="button" aria-label="展开研究资料侧栏"
+            title="展开研究资料侧栏" onClick={()=>setSourceCollapsed(false)}><span aria-hidden="true">›</span><span>资料</span></button>:<>
+          <div className="panel-head"><div><div className="eyebrow">01 / KNOWLEDGE BASE</div><h2>研究资料 <span className="panel-counter">{sources.length}/5</span></h2></div>
+            <div className="panel-head-actions"><span className="panel-head-symbol" aria-hidden="true">▤</span>
+              <button className="panel-collapse-toggle" type="button" aria-label="折叠研究资料侧栏" title="折叠研究资料侧栏"
+                aria-expanded="true" onClick={()=>setSourceCollapsed(true)}>‹</button></div></div>
           <div className="source-overview"><span>已收录资料</span><strong>{sourceChars.toLocaleString('en-US')} <small>/ 80,000 字符</small></strong>
             <div className="quota-track"><span style={{width:`${Math.min(100,sourceChars/80000*100)}%`}}/></div></div>
           {sources.length===0?<div className="empty-sources"><div className="empty-icon">▤</div><strong>知识库还是空的</strong><p>粘贴访谈、竞品介绍或研究文档，开始建立有出处的研究地图。</p></div>:
@@ -261,13 +360,19 @@ export default function App(){
               </label><small>最多 5 份文件，单份 ≤10 MB；扫描版 PDF 暂不支持。</small>
             </form>}
           </div>
+          </>}
         </section>
 
-        <section className="map-panel" aria-label="研究地图画布">
+        <section ref={mapPanelRef} className={'map-panel'+(canvasFullscreen?' is-canvas-fullscreen':'')} aria-label="研究地图画布">
           <div className="map-head"><div className="map-project-meta"><div className="eyebrow">02 / REASONING CANVAS</div><h2 title={active.title}>{active.title}</h2><p>{active.goal||'让每个结论，都有迹可循。'}</p></div>
             <div className="map-actions"><span className="node-count">{tree.nodes.length} NODES</span>
-              <button className="button button-primary" disabled={busy||sources.length===0} onClick={generate}>◈ 生成原文结构草稿</button></div>
+              <button className="button button-quiet fullscreen-toggle" type="button" aria-label={canvasFullscreen?'退出画布全屏':'全屏显示画布'}
+                aria-pressed={canvasFullscreen} title={canvasFullscreen?'退出画布全屏':'全屏显示画布'}
+                onClick={()=>void toggleCanvasFullscreen()}>{canvasFullscreen?'↙ 退出全屏':'⛶ 全屏画布'}</button>
+              <button className="button button-primary" disabled={busy||sources.length===0} onClick={generate}>{llmActive?'◈ 生成候选导图（LLM）':'◈ 生成原文结构草稿'}</button></div>
           </div>
+          {generation&&<GenerationProgress phase={generation.phase} mode={generation.mode}
+            sourceCount={generation.sourceCount} startedAt={generation.startedAt}/>}
           <div className="map-metrics" aria-label="地图摘要">
             <div><span className="metric-pictogram">◇</span> <strong>{tree.nodes.length}</strong> 节点</div>
             <div><span className="metric-pictogram mint">◈</span> <strong>{anchoredCount}</strong> 有来源</div>
@@ -283,7 +388,7 @@ export default function App(){
                 aria-selected={selectedId===node.id}
                 className={'outline-node '+(node.id===selectedId?'selected':'')}
                 style={{paddingLeft:14+depth*16}}
-                onClick={()=>{setSelectedId(node.id);setPanel('detail');document.querySelector('.inspector')?.scrollIntoView({behavior:'smooth',block:'start'});}}>
+                onClick={()=>{setSelectedId(node.id);setPanel('detail');setInspectorCollapsed(false);document.querySelector('.inspector')?.scrollIntoView({behavior:'smooth',block:'start'});}}>
                 <span className="outline-type">{typeLabels[node.type]||node.type}</span>
                 <strong>{node.title}</strong>
                 <small>{node.verification==='verified_by_user'?'✓ 人工已核验':node.evidenceRefs.some(r=>r.anchorStatus==='anchored')?'◈ 有原文引用':'◇ 待核验'}</small>
@@ -302,8 +407,13 @@ export default function App(){
           <div className="canvas-footer"><span>TRACEABLE BY DESIGN <i/> LOCAL WORKSPACE</span><span>可定位的引用 ≠ 外部真实性证明</span></div>
         </section>
 
-        <section className="inspector" aria-label="节点与原文检查器">
-          <div className="panel-head inspector-head"><div><div className="eyebrow">03 / EVIDENCE INSPECTOR</div><h2>审阅与核验</h2></div><span className="panel-head-symbol" aria-hidden="true">⌁</span></div>
+        <section className={'inspector'+(inspectorCollapsed?' is-collapsed':'')} aria-label="节点与原文检查器">
+          {inspectorCollapsed?<button className="sidebar-expand-tab" type="button" aria-label="展开证据检查侧栏"
+            title="展开证据检查侧栏" onClick={()=>setInspectorCollapsed(false)}><span aria-hidden="true">‹</span><span>审阅</span></button>:<>
+          <div className="panel-head inspector-head"><div><div className="eyebrow">03 / EVIDENCE INSPECTOR</div><h2>审阅与核验</h2></div>
+            <div className="panel-head-actions"><span className="panel-head-symbol" aria-hidden="true">⌁</span>
+              <button className="panel-collapse-toggle" type="button" aria-label="折叠证据检查侧栏" title="折叠证据检查侧栏"
+                aria-expanded="true" onClick={()=>setInspectorCollapsed(true)}>›</button></div></div>
           <div className="inspector-tabs" role="tablist" aria-label="检查器视图">
             <button type="button" role="tab" aria-selected={panel==='detail'} className={panel==='detail'?'active':''} onClick={()=>setPanel('detail')}>节点详情</button>
             <button type="button" role="tab" aria-selected={panel==='source'} className={panel==='source'?'active':''} onClick={()=>setPanel('source')}>原文位置</button>
@@ -356,14 +466,15 @@ export default function App(){
             <p className="source-footnote">显示的是原始资料文本，不代表来源事实已经得到独立验证。</p>
           </div>:<div className="inspector-content muted">点击画布中的节点，查看其来源与编辑选项。</div>}
           <div className="inspector-bottom"><span className="status-dot"/> HUMAN-IN-CONTROL WORKFLOW</div>
+          </>}
         </section>
       </div>}
 
       {draft&&active&&tree&&<div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="draft-title" tabIndex={-1} ref={modalRef}>
         <div className="modal-eyebrow"><span className="review-spark">✳</span> REVIEW BEFORE COMMIT <span className="modal-step">01 / 02</span></div>
         <h2 id="draft-title">导图草稿预览</h2>
-        <p>本地规则引擎从原文提取了 <b>{draft.map.nodes.length}</b> 个节点。请确认结构是否合理；当前正式地图保持不变。</p>
-        <div className="review-caution"><span>ⓘ</span> 这是一份原文摘录草稿，不是经过核验的 AI 研究结论。</div>
+        <p>{llmActive?<>模型根据原文提出了 <b>{draft.map.nodes.length}</b> 个候选节点。请逐条核对后再决定是否应用；当前正式地图保持不变。</>:<>本地规则引擎从原文提取了 <b>{draft.map.nodes.length}</b> 个节点。请确认结构是否合理；当前正式地图保持不变。</>}</p>
+        <div className="review-caution"><span>{llmActive?'✳':'ⓘ'}</span> {llmActive?'候选内容由语言模型生成，可能包含错误或无法定位的引用，必须人工核对原文后才能采信。':'这是一份原文摘录草稿，不是经过核验的 AI 研究结论。'}{llmActive&&typeof draft.droppedEvidenceCount==='number'&&draft.droppedEvidenceCount>0?`（已丢弃 ${draft.droppedEvidenceCount} 条无法在原文中定位的引用）`:''}</div>
         <div className="modal-list-caption"><span>PROPOSED STRUCTURE</span><span>{draft.map.nodes.length} NODES</span></div>
         <div className="modal-items">{draft.map.nodes.slice(0,10).map(n=><div key={n.id} className="draft-row"><span className="draft-kind">{typeLabels[n.type]||n.type}</span><strong>{n.title.slice(0,110)}</strong></div>)}</div>
         <footer><button className="button button-quiet" onClick={()=>setDraft(null)}>取消</button><button className="button button-primary" disabled={busy}

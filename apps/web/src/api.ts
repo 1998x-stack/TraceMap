@@ -5,7 +5,8 @@ export type Project = { id: string; title: string; goal: string; revision: numbe
 export type Source = { id: string; title: string; kind: string; status: string; extractedCharCount: number };
 export type Paragraph = { id: string; text: string; sourceId: string; pageNo: number|null; ordinal: number };
 export type PatchProposal = { patchId: string; baseRevision: number; status: string; operation: string; generationMode: string; proposedOps: ({opId:string;op:string;parentId:string;node:{title:string;type:string}})[] };
-export type GenerationDraft = { draftId: string; baseRevision: number; status: string; generationMode: string; selectionPolicy?: string; map: Omit<MapDocument,'revision'> };
+export type GenerationDraft = { draftId: string; baseRevision: number; status: string; generationMode: string; selectionPolicy?: string; provider?: { api: string; model: string }; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }; droppedEvidenceCount?: number; map: Omit<MapDocument,'revision'> };
+export type Health = { status: string; mode: string; generationProvider: string; generationModel: string | null; llmConfigured: boolean };
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status: number) { super(message); }
 }
@@ -41,6 +42,11 @@ export class Api {
     return res.json() as Promise<T>;
   }
   listProjects() { return this.call<{items:Project[]}>('/projects'); }
+  async health(): Promise<Health> {
+    const res = await fetch('/health');
+    if (!res.ok) throw new ApiError('HEALTH_FAILED', `HTTP ${res.status}`, res.status);
+    return await res.json() as Health;
+  }
   createProject(title:string,goal:string) { return this.call<Project>('/projects','POST',{title,goal}); }
   project(id:string) { return this.call<Project>(`/projects/${id}`); }
   map(id:string) { return this.call<MapDocument>(`/projects/${id}/map`); }
