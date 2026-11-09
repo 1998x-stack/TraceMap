@@ -77,6 +77,8 @@ The v0.2 UI redesign is documented in [UI design system](docs/UI_DESIGN_SYSTEM.m
 
 ## Scholarly research interface & generation feedback v0.4
 
+See [independent sidebars and fullscreen canvas v0.5](docs/UI_LAYOUT_V0.5.md): the project rail, source library and evidence inspector collapse independently; the map panel supports native fullscreen with a keyboard-exitable focus-mode fallback.
+
 The latest React design uses warm archival paper, academic serif headings, restrained ink/green colors, source-index cards and precise manuscript-style evidence highlighting. See [design and behavior spec](docs/UI_ACADEMIC_GENERATION_V0.4.md). The CSS theme is isolated in `apps/web/src/academic-theme.css` and works without remote fonts.
 
 When generating a candidate map, a dedicated panel shows the **elapsed time and client-observed request phases** (waiting for backend, reading the returned draft). These are **not** server-side milestone telemetry or a completion percentage. Failed/slow requests surface explicit messages; candidates still need human confirmation and do not mutate the saved map.

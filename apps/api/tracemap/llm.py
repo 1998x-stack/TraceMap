@@ -53,7 +53,10 @@ SYSTEM_PROMPT = (
     "matching: {\"nodes\": [{\"type\": \"claim|evidence|counterpoint|question|"
     "decision\", \"title\": \"<short, <=160 chars>\", \"note\": \"<optional>\", "
     "\"sourceId\": \"<id>\", \"paragraphId\": \"<id>\", \"exactQuote\": \"<verbatim>\"}]}.\n"
-    "Return at most 24 nodes, most relevant first."
+    "Return at most 16 nodes, most relevant first. Keep each title <=100 characters, "
+    "each note <=240 characters, and each exactQuote <=1200 characters. Choose the "
+    "shortest contiguous verbatim quote that uniquely anchors the claim. "
+    "Return compact JSON without indentation or unnecessary prose."
 )
 
 
@@ -274,20 +277,42 @@ def draft_from_llm(goal: str, documents: list[dict], paragraphs: dict, source_ti
         "model": os.getenv("TRACEMAP_LLM_MODEL", DEFAULT_MODEL),
         "timeout": _int_env("TRACEMAP_LLM_TIMEOUT", 180, 1, 600),
         "max_tokens": _int_env("TRACEMAP_LLM_MAX_TOKENS", 8192, 64, 32_000),
+        "retry_max_tokens": max(
+            _int_env("TRACEMAP_LLM_MAX_TOKENS", 8192, 64, 32_000),
+            _int_env("TRACEMAP_LLM_RETRY_MAX_TOKENS", 16_384, 64, 32_000),
+        ),
         "api_key": key,
     }
 
     messages = build_messages(goal, documents)
-    # A reasoning model occasionally truncates the JSON; retry once before failing.
+    # Retry invalid JSON once at the same budget. For a real length truncation,
+    # retry once with a larger (but explicitly bounded) output budget; retrying
+    # with the same max_tokens only repeats the original failure and wastes cost.
+    current_max_tokens = config["max_tokens"]
+    retry_max_tokens = config["retry_max_tokens"]
     last_error: LLMError | None = None
-    for _attempt in range(2):
+    for attempt in range(2):
+        attempt_config = {**config, "max_tokens": current_max_tokens}
         try:
-            content, usage = transport(messages, config)
+            content, usage = transport(messages, attempt_config)
             break
         except LLMError as exc:
             if exc.code not in {"LLM_OUTPUT_TRUNCATED", "LLM_INVALID_OUTPUT"}:
                 raise
             last_error = exc
+            if exc.code == "LLM_OUTPUT_TRUNCATED":
+                if attempt == 0 and current_max_tokens < retry_max_tokens:
+                    current_max_tokens = min(retry_max_tokens, current_max_tokens * 2)
+                    continue
+                raise LLMError(
+                    "LLM_OUTPUT_TRUNCATED",
+                    f"模型输出仍被截断（本次已达到 {current_max_tokens} tokens）。"
+                    "请检查模型上下文上限，或提高 TRACEMAP_LLM_RETRY_MAX_TOKENS / 缩短资料范围。",
+                    502,
+                ) from None
+            if attempt == 0:
+                continue
+            raise
     else:
         raise last_error or LLMError("LLM_INVALID_OUTPUT", "模型未返回内容", 502)
     parsed = extract_json_object(content)

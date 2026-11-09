@@ -21,7 +21,8 @@ win over the file. `TRACEMAP_DOTENV=0` ignores the file entirely.
 | `TRACEMAP_LLM_BASE_URL` | `https://iagent.iauto.com/v1` | OpenAI-compatible base URL. |
 | `TRACEMAP_LLM_MODEL` | `iagent/standard` | Model id. |
 | `TRACEMAP_LLM_TIMEOUT` | `180` | Per-request timeout in seconds. |
-| `TRACEMAP_LLM_MAX_TOKENS` | `8192` | Output budget. Reasoning models need a large budget (GT-0022). |
+| `TRACEMAP_LLM_MAX_TOKENS` | `8192` | First-attempt output budget. |
+| `TRACEMAP_LLM_RETRY_MAX_TOKENS` | `16384` | Maximum output budget for one truncation retry. The retry uses up to 2× the first budget, capped here. Set equal to the first budget to disable escalation. |
 | `TRACEMAP_LLM_API_KEY` | – | Inline key (keep out of Git). |
 | `TRACEMAP_LLM_API_KEY_FILE` | `~/.config/ai-credentials/iauto_api_key` | Preferred: a private (`600`) key file. |
 
@@ -43,7 +44,9 @@ The key is resolved from `TRACEMAP_LLM_API_KEY`, else from the file at
    `<<<UNTRUSTED_DOCUMENT_DATA>>> … <<<END…>>>` delimiters, with a system prompt
    that forbids following instructions found in the data.
 2. The model returns `{"nodes":[{type,title,note,sourceId,paragraphId,exactQuote}]}`.
-   It is told to copy `exactQuote` **verbatim** and to invent nothing.
+   It is told to copy `exactQuote` **verbatim** and to invent nothing. The
+   prompt caps output at 16 nodes, 100-character titles, 240-character notes
+   and 1200-character quotes, and requests compact JSON.
 3. The server **recomputes** the `[start,end)` offsets locally and re-verifies
    every anchor with `core.verify_ref`. Evidence that cannot be located, is
    paraphrased, or belongs to another project is **dropped and counted**
@@ -60,7 +63,7 @@ The key is resolved from `TRACEMAP_LLM_API_KEY`, else from the file at
 | `LLM_NOT_CONFIGURED` | 503 | no | `llm` mode selected but no key found. |
 | `LLM_UNAVAILABLE` | 503 | yes | Cannot reach the endpoint (timeout/DNS). |
 | `LLM_UPSTREAM_ERROR` | 502 | yes | Upstream returned a non-2xx status. |
-| `LLM_OUTPUT_TRUNCATED` | 502 | yes | `finish_reason=length`; retried once automatically (GT-0022). |
+| `LLM_OUTPUT_TRUNCATED` | 502 | yes | `finish_reason=length`; retried once with a doubled token budget up to `TRACEMAP_LLM_RETRY_MAX_TOKENS` (GT-0027). |
 | `LLM_INVALID_OUTPUT` | 502 | yes | No parseable/valid JSON, or no usable nodes; retried once. |
 
 If `llm` mode is selected but no key is configured, the API **falls back to the
@@ -82,8 +85,10 @@ curl -fsS http://127.0.0.1:8000/health | jq .
 
 ## Limitations (not production)
 
-- **No hard cost cap.** There is a token budget (`TRACEMAP_LLM_MAX_TOKENS`) and a
-  prompt-size bound, but no per-user/per-project spend limit or quota ledger.
+- **No hard cost cap.** There is a first-attempt token budget and a bounded
+  one-time escalation (`TRACEMAP_LLM_RETRY_MAX_TOKENS`), plus a prompt-size
+  bound, but no per-user/per-project spend limit or quota ledger. A truncation
+  retry may roughly double completion-token allowance for that request.
 - **Synchronous and slow.** A generate call blocks for ~10–60 s (reasoning
   models); there is no durable async job, retry queue or cancellation. The UI
   shows a busy state for the duration.
@@ -99,7 +104,7 @@ curl -fsS http://127.0.0.1:8000/health | jq .
 
 `apps/api/tests/test_llm.py` covers the adapter without any network or real key:
 grounding/dropping, prompt construction, key handling, error mapping, truncation
-detection + retry, the `/generate` LLM path (live map must not change), and
+detection, bounded token-budget escalation and ceiling exhaustion, the `/generate` LLM path (live map must not change), and
 `/health`. The hermetic paths (`TRACEMAP_DOTENV=0`, `TRACEMAP_GENERATION_MODE=extractive`)
 keep CI offline.
 

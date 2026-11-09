@@ -28,9 +28,10 @@
 | Safety tests fail only when `TRACEMAP_*` is exported in the shell | [GT-0018](#gt-0018--safety-tests-depended-on-ambient-tracemap-variables) |
 | `crypto.randomUUID is not a function` (LAN / plain-HTTP origin) | [GT-0021](#gt-0021--cryptorandomuuid-is-not-a-function-on-a-plain-http-lan-origin) |
 | Explicitly empty environment value was overridden by `.env` on Linux | [GT-0026](#gt-0026--shell-dotenv-loader-overwrote-explicit-empty-environment-variables) |
+| LLM output still truncated after automatic retry | [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
 | LLM candidate has no valid evidence, but still appears in the map | [GT-0024](#gt-0024--model-claims-with-invalid-or-out-of-scope-anchors-survived) |
 | Candidate generation takes tens of seconds with no visible explanation | [GT-0025](#gt-0025--synchronous-generation-looked-frozen) |
-| `502 LLM_INVALID_OUTPUT` intermittently from `/generate` | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) |
+| `502 LLM_OUTPUT_TRUNCATED` after retry, or malformed model JSON | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) and [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
 | Markdown export hides node type / notes / verification | [GT-0023](#gt-0023--markdown-export-does-not-convey-node-type-notes-or-verification) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
 | HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
@@ -95,6 +96,7 @@ Verified commits:
 | GT-0020 | Locked SQLite returned an opaque non-JSON 500 | Backend/Reliability | P2 |
 | GT-0021 | `crypto.randomUUID` missing on a plain-HTTP LAN origin | Frontend/Deployment | P1 |
 | GT-0022 | Reasoning-model truncation broke LLM output | Backend/LLM | P2 |
+| GT-0027 | Truncation retry reused the same token budget | Backend/LLM | P1 |
 
 ## 5. Open issues / roadmap
 
@@ -1232,3 +1234,48 @@ actual `TRACEMAP_LLM_API_KEY` values.
 **Scope:** this prevents accidental overwrite at shell startup. It does not
 replace production secret management or a security audit of arbitrary
 operator-configured LLM URLs.
+
+---
+
+## GT-0027 — Truncation retry reused the same token budget
+
+**Status:** FIX APPLIED — CI verification pending
+**Class:** Backend / LLM reliability and cost control
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #7 LLM provider adapter; OpenAI-compatible reasoning models.
+
+**Symptoms:** the provider returns finish_reason=length, TraceMap reports
+LLM_OUTPUT_TRUNCATED, retries once, but the second request has exactly the
+same max_tokens and may fail in the same way. A larger configured default
+alone is not a robust recovery strategy when the current model/provider needs
+more completion budget.
+
+**Minimal reproduction:** set TRACEMAP_LLM_MAX_TOKENS=4096; inject a transport
+that records the budget and raises LLM_OUTPUT_TRUNCATED on the first call.
+Before the fix the recorded sequence was [4096, 4096].
+
+**Expected:** one bounded retry with a larger completion budget; if the ceiling
+is still insufficient, return a useful actionable error and do not create a
+partial draft.
+**Actual (before):** retry reused the initial budget and repeated the same
+failure.
+**Root cause:** the retry loop repeated the transport call without changing
+config["max_tokens"].
+**Fix:** first attempt defaults to 8192; after finish_reason=length, retry
+once with up to 2× the initial budget, capped by
+TRACEMAP_LLM_RETRY_MAX_TOKENS (default 16384). If the provider truncates
+again, or the configured ceiling equals the initial budget, stop and return
+LLM_OUTPUT_TRUNCATED with the reached budget and configuration guidance.
+The prompt also limits output to 16 concise nodes, 240-character notes and
+1200-character exact quotes to reduce avoidable output volume.
+**Files:** apps/api/tracemap/llm.py, apps/api/tests/test_llm.py,
+.env.example, docs/LLM_PROVIDER.md.
+**Tests:** token escalation, custom ceiling, ceiling exhaustion and no
+same-budget retry.
+**Verification:** pending independent GitHub CI.
+**Prevention:** use the smallest adequate first budget and an explicit,
+provider-compatible retry ceiling; monitor actual usage and costs.
+**Limitation:** the provider's context/output ceiling still applies. If it
+rejects the larger budget, configure a supported ceiling or reduce the selected
+source scope. A token retry is bounded but can increase request cost.

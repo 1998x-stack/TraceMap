@@ -219,3 +219,65 @@ def test_draft_from_llm_retries_truncation(monkeypatch):
     out = llm.draft_from_llm("目标", documents, index, {source: "访谈"}, chat=flaky)
     assert calls["n"] == 2
     assert len(out["tree"]["nodes"]) >= 2
+
+def test_draft_from_llm_escalates_token_budget_after_truncation(monkeypatch):
+    source, paragraphs, index = _fixture()
+    monkeypatch.setenv("TRACEMAP_LLM_API_KEY", "k")
+    monkeypatch.setenv("TRACEMAP_LLM_MAX_TOKENS", "4096")
+    monkeypatch.setenv("TRACEMAP_LLM_RETRY_MAX_TOKENS", "12000")
+    canned = json.dumps({"nodes": [{"type": "claim", "title": "预算提升后成功", "sourceId": source,
+                                    "paragraphId": paragraphs[0]["id"], "exactQuote": paragraphs[0]["text"]}]})
+    budgets = []
+
+    def flaky(messages, config):
+        budgets.append(config["max_tokens"])
+        if len(budgets) == 1:
+            raise llm.LLMError("LLM_OUTPUT_TRUNCATED", "truncated", 502)
+        return canned, {"total_tokens": 5}
+
+    documents = [{"sourceId": source, "title": "访谈",
+                  "paragraphs": [{"id": p["id"], "ordinal": p["ordinal"], "text": p["text"]} for p in paragraphs]}]
+    result = llm.draft_from_llm("目标", documents, index, {source: "访谈"}, chat=flaky)
+    assert budgets == [4096, 8192]
+    assert result["usage"]["total_tokens"] == 5
+
+
+def test_draft_from_llm_caps_escalated_budget_and_returns_actionable_error(monkeypatch):
+    source, paragraphs, index = _fixture()
+    monkeypatch.setenv("TRACEMAP_LLM_API_KEY", "k")
+    monkeypatch.setenv("TRACEMAP_LLM_MAX_TOKENS", "10000")
+    monkeypatch.setenv("TRACEMAP_LLM_RETRY_MAX_TOKENS", "12000")
+    budgets = []
+
+    def always_truncated(messages, config):
+        budgets.append(config["max_tokens"])
+        raise llm.LLMError("LLM_OUTPUT_TRUNCATED", "truncated", 502)
+
+    documents = [{"sourceId": source, "title": "访谈",
+                  "paragraphs": [{"id": p["id"], "ordinal": p["ordinal"], "text": p["text"]} for p in paragraphs]}]
+    with pytest.raises(llm.LLMError) as exc:
+        llm.draft_from_llm("目标", documents, index, {source: "访谈"}, chat=always_truncated)
+    assert budgets == [10000, 12000]
+    assert exc.value.code == "LLM_OUTPUT_TRUNCATED"
+    assert "12000 tokens" in exc.value.message
+    assert "TRACEMAP_LLM_RETRY_MAX_TOKENS" in exc.value.message
+
+
+def test_draft_from_llm_does_not_repeat_same_truncation_budget(monkeypatch):
+    source, paragraphs, index = _fixture()
+    monkeypatch.setenv("TRACEMAP_LLM_API_KEY", "k")
+    monkeypatch.setenv("TRACEMAP_LLM_MAX_TOKENS", "8192")
+    monkeypatch.setenv("TRACEMAP_LLM_RETRY_MAX_TOKENS", "8192")
+    budgets = []
+
+    def always_truncated(messages, config):
+        budgets.append(config["max_tokens"])
+        raise llm.LLMError("LLM_OUTPUT_TRUNCATED", "truncated", 502)
+
+    documents = [{"sourceId": source, "title": "访谈",
+                  "paragraphs": [{"id": p["id"], "ordinal": p["ordinal"], "text": p["text"]} for p in paragraphs]}]
+    with pytest.raises(llm.LLMError) as exc:
+        llm.draft_from_llm("目标", documents, index, {source: "访谈"}, chat=always_truncated)
+    assert budgets == [8192]
+    assert exc.value.code == "LLM_OUTPUT_TRUNCATED"
+    assert "8192 tokens" in exc.value.message
