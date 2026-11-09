@@ -42,7 +42,7 @@ export default defineConfig({
     {
       command: `${JSON.stringify(apiPython)} -m uvicorn tracemap.main:app --host 127.0.0.1 --port ${apiPort}`,
       cwd: apiDir,
-      env: { TRACEMAP_ENV: 'development', TRACEMAP_DATABASE_URL: e2eDatabaseUrl },
+      env: { TRACEMAP_ENV: 'development', TRACEMAP_DATABASE_URL: e2eDatabaseUrl, TRACEMAP_DOTENV: '0' },
       url: `http://127.0.0.1:${apiPort}/health`,
       reuseExistingServer: false,
       timeout: 90000,

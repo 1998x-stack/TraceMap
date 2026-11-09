@@ -67,6 +67,9 @@ run_restart_cycle() {
   export TRACEMAP_RUNTIME_DIR="$tmp/run"
   # Never allow an inherited URL to point a restart test at user data.
   unset TRACEMAP_DATABASE_URL
+  # Keep the isolated restart offline/hermetic (no repository .env, no real model).
+  export TRACEMAP_DOTENV=0
+  export TRACEMAP_GENERATION_MODE=extractive
   RESTART_API_PORT="$(pick_port)"
   RESTART_WEB_PORT="$(pick_port)"
   while [[ "$RESTART_API_PORT" == "$RESTART_WEB_PORT" ]]; do RESTART_WEB_PORT="$(pick_port)"; done
@@ -154,7 +157,8 @@ run_workflow() {
   port="$(pick_port)"
   [[ "$(port_state "$port")" == free ]] || { bad "throwaway port $port unexpectedly occupied"; return; }
   base="http://127.0.0.1:$port"
-  TRACEMAP_ENV=development TRACEMAP_DATABASE_URL="sqlite:///$tmp/smoke.db" \
+  TRACEMAP_ENV=development TRACEMAP_DOTENV=0 TRACEMAP_GENERATION_MODE=extractive \
+  TRACEMAP_DATABASE_URL="sqlite:///$tmp/smoke.db" \
     "$API_PY" -m uvicorn tracemap.main:app --host 127.0.0.1 --port "$port" >>"$tmp/api.log" 2>&1 &
   pid=$!
   WORKFLOW_PID="$pid"

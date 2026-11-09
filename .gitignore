@@ -3,9 +3,11 @@ __pycache__/
 *.pyc
 *.egg-info/
 .venv/
+# Local secrets & configuration — never commit. Keep the template.
 .env
 .env.*
 !.env.example
+!.env.example.*
 node_modules/
 dist/
 *.db

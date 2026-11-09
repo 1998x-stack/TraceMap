@@ -1,5 +1,11 @@
+import os
 from pathlib import Path
 import pytest
+
+# Keep the test suite hermetic: never load the repository .env (which may select a
+# real LLM provider or a developer runtime database). Individual tests opt in.
+os.environ.setdefault("TRACEMAP_DOTENV", "0")
+
 from fastapi.testclient import TestClient
 from tracemap.main import create_app
 

@@ -24,6 +24,29 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 API_DIR="$REPO_ROOT/apps/api"
 WEB_DIR="$REPO_ROOT/apps/web"
 
+# Load the repository .env (single source of truth). Real environment variables and
+# explicit per-command overrides always win; TRACEMAP_DOTENV=0 ignores the file.
+if [[ "${TRACEMAP_DOTENV:-1}" != "0" ]]; then
+  ENV_FILE="${TRACEMAP_ENV_FILE:-$REPO_ROOT/.env}"
+  if [[ -f "$ENV_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line#"${line%%[![:space:]]*}"}"          # left-trim
+      if [[ -z "$line" ]]; then continue; fi
+      if [[ "$line" == \#* ]]; then continue; fi
+      if [[ "$line" == export\ * ]]; then line="${line#export }"; fi
+      if [[ "$line" != *=* ]]; then continue; fi
+      key="${line%%=*}"
+      value="${line#*=}"
+      key="${key#"${key%%[![:space:]]*}"}"
+      key="${key%"${key##*[![:space:]]}"}"
+      if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then continue; fi
+      if [[ ${#value} -ge 2 && "$value" == \"*\" && "$value" == *\" ]]; then value="${value:1:${#value}-2}"; fi
+      if [[ ${#value} -ge 2 && "$value" == \'*\' && "$value" == *\' ]]; then value="${value:1:${#value}-2}"; fi
+      if [[ -z "${!key:-}" ]]; then export "$key=$value"; fi
+    done < "$ENV_FILE"
+  fi
+fi
+
 RUNTIME_DIR="${TRACEMAP_RUNTIME_DIR:-$HOME/tracemap-runtime}"
 PID_DIR="$RUNTIME_DIR/pids"
 LOG_DIR="$RUNTIME_DIR/logs"
