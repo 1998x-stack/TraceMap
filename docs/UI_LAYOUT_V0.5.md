@@ -28,7 +28,7 @@ The “全屏画布” control requests browser fullscreen on the map panel. The
 
 ## Verification
 
-The Playwright suite in apps/web/e2e/layout-controls.spec.ts covers:
+[GitHub Actions #42595375357](https://github.com/1998x-stack/TraceMap/actions/runs/42595375357) passed 54 Python tests, 12 Chromium E2E cases, the strict frontend build, 31 Linux smoke checks and 8 restart checks. The Playwright suite in apps/web/e2e/layout-controls.spec.ts covers:
 
 - Project rail, source library and inspector collapse independently.
 - Both work panels collapsed simultaneously while the map remains visible.

@@ -91,7 +91,8 @@ curl -fsS http://127.0.0.1:8000/health | jq .
   retry may roughly double completion-token allowance for that request.
 - **Synchronous and slow.** A generate call blocks for ~10–60 s (reasoning
   models); there is no durable async job, retry queue or cancellation. The UI
-  shows a busy state for the duration.
+  shows elapsed time and client-observed waiting phases, but no server-side
+  milestones, true completion percentage or reliable cancellation.
 - **Prompt-injection resistance is best-effort** (delimiters + instructions +
   server-side verification). It is not a security boundary.
 - **No accuracy evaluation.** Grounding is verified structurally (exact quotes

@@ -1239,7 +1239,7 @@ operator-configured LLM URLs.
 
 ## GT-0027 — Truncation retry reused the same token budget
 
-**Status:** FIX APPLIED — CI verification pending
+**Status:** RESOLVED — verified in GitHub CI (Linux runner)
 **Class:** Backend / LLM reliability and cost control
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1273,7 +1273,7 @@ The prompt also limits output to 16 concise nodes, 240-character notes and
 .env.example, docs/LLM_PROVIDER.md.
 **Tests:** token escalation, custom ceiling, ceiling exhaustion and no
 same-budget retry.
-**Verification:** pending independent GitHub CI.
+**Verification:** [CI #42595375357](https://github.com/1998x-stack/TraceMap/actions/runs/42595375357) passed 54 Python tests, 12 Chromium E2E tests, frontend build, 31 Linux smoke checks and 8 restart checks.
 **Prevention:** use the smallest adequate first budget and an explicit,
 provider-compatible retry ceiling; monitor actual usage and costs.
 **Limitation:** the provider's context/output ceiling still applies. If it
