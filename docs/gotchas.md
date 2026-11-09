@@ -25,6 +25,9 @@
 | Playwright reused unknown test servers or database override | [GT-0015](#gt-0015--e2e-server-reuse-and-database-override) |
 | Restart smoke could inherit user database | [GT-0016](#gt-0016--restart-test-inherited-database-url) |
 | Test commands broke when run outside repository root | [GT-0017](#gt-0017--relative-commands-and-unscoped-tmp-cleanup) |
+| Safety tests fail only when `TRACEMAP_*` is exported in the shell | [GT-0018](#gt-0018--safety-tests-depended-on-ambient-tracemap-variables) |
+| `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
+| HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
 | Test suite is slow (~40 s) | [GT-0011](#gt-0011--sqlite-ddlfsync-is-slow-on-this-host) |
 
 ## 2. Current environment and verified commits
@@ -50,6 +53,10 @@ Verified commits:
 | `429afac` | `If-Match` bounds (fixes [GT-0005](#gt-0005--oversized-if-match-revision-caused-a-500-overflowerror)). |
 | `3e7c1fd` | Restart-persistence + lifecycle tests. |
 | `ea14213` | Deployment scripts + CI script check (mitigates [GT-0002](#gt-0002--default-sqlite-path-is-cwd-relative--import-side-effect-creates-a-stray-db), [GT-0006](#gt-0006--system-python-has-no-pip-or-venv-on-ubuntu-2404)). |
+| `bf31da4` | Fail-closed loopback, owned PID records, isolated smoke (GT-0012–GT-0014). |
+| `7c06f87` | E2E DB-override proof + restart sentinel (GT-0015, GT-0016). |
+| `784511c` | Private runtime permissions and gotchas record (verified baseline for this review). |
+| `1182bc1`, `771b3f4`, `52bfd20` | Independent Linux review: hermetic safety tests, storage-error contract, PDF coverage (GT-0018–GT-0020). |
 
 ## 3. Most common errors (index)
 
@@ -73,6 +80,9 @@ Verified commits:
 | GT-0005 | Oversized `If-Match` revision → 500 `OverflowError` | Backend/Security | P1 |
 | GT-0006 | System Python has no `pip`/`venv` | Environment | P2 |
 | GT-0010 | `tsc -b` leaves an untracked `tsbuildinfo` | Environment | P3 |
+| GT-0018 | Safety tests depended on ambient `TRACEMAP_*` variables | Test/Reproducibility | P2 |
+| GT-0019 | Deployment guide left the shell in `apps/web` | Documentation | P2 |
+| GT-0020 | Locked SQLite returned an opaque non-JSON 500 | Backend/Reliability | P2 |
 
 ## 5. Open issues / roadmap
 
@@ -82,6 +92,7 @@ Verified commits:
 | GT-0008 | Deprecated Starlette `TestClient` + `httpx` pairing | Test | P3 | Would require `httpx2` or a version pin; not blocking now |
 | GT-0009 | Swagger UI assets load from a CDN | Frontend/Docs | P3 | Cosmetic; affects offline `/docs` only |
 | GT-0011 | SQLite DDL/fsync is slow on this host | Environment | P3 | Host disk characteristic; not application code |
+| GT-0017 | Relative commands and unscoped /tmp cleanup | Documentation | P2 | Guide corrected; independent cold-start now performed by this review (see GT-0019) |
 
 ## 5.1 Deployment review follow-up (PR #6)
 
@@ -797,3 +808,152 @@ server acceptance.
 **Verification:** documentation paths were corrected; independent fresh-agent reproduction is not yet verified.
 **Prevention:** run documentation blocks as scripts in CI when practical.
 **Links:** PR #6.
+
+## GT-0018 — Safety tests depended on ambient TRACEMAP variables
+
+**Status:** RESOLVED
+**Class:** Test / Reproducibility
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** independent cold-start review of `784511c`, Ubuntu 24.04.3.
+
+**Symptoms:** `python -m unittest discover -s scripts/tests` reported 1 failure
+when the shell had exported the documented port variables (as the deployment
+guide suggests for a second instance). The failing sub-case expected
+`must differ` and instead got `api: port 8123 already in use`.
+
+**Minimal reproduction:**
+```bash
+cd <repo>
+TRACEMAP_API_PORT=8123 TRACEMAP_WEB_PORT=5323 \
+  python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+# before fix: FAILED (failures=1) in test_start_fails_closed_on_unsafe_host_and_bad_ports
+```
+
+**Expected:** deployment contract tests pass (or fail) identically regardless of
+the caller's environment.
+
+**Actual:** `run()` cloned `os.environ`, so `TRACEMAP_API_PORT`/`TRACEMAP_WEB_PORT`
+leaked into the child; the `{"TRACEMAP_WEB_PORT": "8000"}` matrix row assumed the
+API port defaulted to `8000` and no service was listening.
+
+**Root cause:** `scripts/tests/test_dev_safety.py::run` used
+`os.environ.copy()` and the matrix relied on implicit defaults.
+
+**Fix:** strip every inherited `TRACEMAP_*` variable before applying per-test
+overrides; make the "must differ" case explicit
+(`{"TRACEMAP_API_PORT": "8000", "TRACEMAP_WEB_PORT": "8000"}`); add a
+hermeticity regression test.
+
+**Files:** `scripts/tests/test_dev_safety.py`.
+
+**Related tests:**
+`DeploymentSafetyTests::test_safety_harness_ignores_ambient_tracemap_environment`.
+
+**Verification:** 8 tests pass both without and with
+`TRACEMAP_RUNTIME_DIR/API_PORT/WEB_PORT` exported.
+
+**Prevention:** never depend on ambient environment in contract tests; assert
+that the harness strips it.
+
+**Links:** commit `1182bc1` (this review).
+
+---
+
+## GT-0019 — Deployment guide left the shell in `apps/web`
+
+**Status:** RESOLVED
+**Class:** Documentation / Agent reliability
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** independent cold-start review of `784511c`.
+
+**Symptoms:** following `docs/DEPLOYMENT_LINUX.md` verbatim, the last setup step
+runs in `apps/web`, so the very next §3 command fails:
+`scripts/dev-start.sh: No such file or directory` (exit 127).
+
+**Minimal reproduction:**
+```bash
+cd <repo>/apps/web && scripts/dev-start.sh      # exit 127
+```
+
+**Expected:** every copy-paste block from the guide works in order.
+
+**Actual:** §2 ended in `apps/web`; §3 used repository-root-relative paths.
+
+**Root cause:** missing `cd` back to the repository root between §2 and §3.
+
+**Fix:** add `# 4. return to the repository root` / `cd ../..` to the setup
+block, state that `scripts/…` paths are repo-root relative, and add an
+alternate-port example.
+
+**Files:** `docs/DEPLOYMENT_LINUX.md`.
+
+**Related tests:** the independent cold-start walkthrough in this review follows
+the guide verbatim.
+
+**Verification:** the corrected guide was executed end to end from a fresh clone
+(see PR comment / GT-0017).
+
+**Prevention:** keep a single documented working directory; run documentation
+command blocks in CI where practical (GT-0017).
+
+**Links:** `PR #6` documentation commit (this review).
+
+---
+
+## GT-0020 — Locked SQLite returned an opaque non-JSON 500
+
+**Status:** RESOLVED
+**Class:** Backend / Reliability / Security
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** SQLAlchemy 2.1.8, SQLite, commit `784511c`.
+
+**Symptoms:** while the SQLite file was write-locked by another process, a write
+returned HTTP 500 with the plain-text body `Internal Server Error` after a ~20 s
+stall. The response was not the unified JSON error envelope, so a client could
+not tell "retry later" from a real bug; diagnosis required reading server logs.
+No database internals were leaked.
+
+**Minimal reproduction:** start the API on a file database, hold an exclusive
+write lock, then:
+```bash
+curl -s -o body.txt -w '%{http_code}\n' -X POST \
+  "http://127.0.0.1:8207/api/v1/projects/<pid>/nodes/ops" \
+  -H 'Authorization: Bearer dev-<name>' -H 'Content-Type: application/json' \
+  -H 'If-Match: "rev-0"' -H 'Idempotency-Key: lock-op-0001' \
+  -d '{"operations":[{"op":"rename","nodeId":"<root>","title":"x"}]}'
+# before fix: 500 "Internal Server Error"; after fix: 503 {"error":{"code":"STORAGE_BUSY",...}}
+```
+
+**Expected:** a structured error with a stable code and `retryable` flag, no
+driver/SQL text, and a prompt failure.
+
+**Actual:** unhandled `sqlalchemy.exc.OperationalError` reached Starlette's
+default 500 handler; the pysqlite busy `timeout` was hardcoded to 20 s.
+
+**Root cause:** no exception handler for `SQLAlchemyError`; fixed
+`connect_args={"timeout": 20}` in `db.engine_for`.
+
+**Fix:** add a pure `storage_error_status()` mapper
+(`locked` `OperationalError` → `503 STORAGE_BUSY retryable=true`; other
+`SQLAlchemyError` → `500 STORAGE_ERROR`; anything else → `500 INTERNAL_ERROR`),
+register handlers that log the traceback server-side and return the unified JSON
+envelope, and make the SQLite busy wait configurable via
+`TRACEMAP_SQLITE_TIMEOUT` (default 20 s).
+
+**Files:** `apps/api/tracemap/main.py`, `apps/api/tracemap/db.py`.
+
+**Related tests:**
+`test_storage_error_status_mapping_is_pure_and_safe`,
+`test_locked_database_returns_structured_retryable_error`.
+
+**Verification:** `python -m pytest -q apps/api/tests` → **34 passed**; the
+locked-DB test asserts 503 + `retryable=true` + absence of `locked`/`sqlite` in
+the body, and that the database is writable again once the lock is released.
+
+**Prevention:** keep every error on the unified envelope, never echo driver text,
+and keep timeouts configurable for tests/ops.
+
+**Links:** commit `771b3f4` (this review).

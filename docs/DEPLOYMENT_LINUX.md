@@ -62,6 +62,9 @@ npm ci
 # 3. Chromium for browser tests (add --with-deps only if you have sudo and the
 #    system libraries are genuinely missing)
 npx playwright install chromium
+
+# 4. return to the repository root — every ./scripts/* command runs from here
+cd ../..
 ```
 
 Runtime state (PID files, logs, SQLite) is kept **outside** the repo by default,
@@ -82,7 +85,17 @@ scripts/dev-start.sh     # (restart = stop then start)
 
 `dev-start.sh` will refuse to start a duplicate, and `dev-stop.sh` will refuse
 to kill an unrelated PID (it verifies the command line). Both work from any
-current directory.
+current directory, but the `scripts/…` **path** is relative to the repository
+root, so run the examples above after the `cd ../..` in §2.
+
+To run a second instance (e.g. while another is on 8000/5173, or for isolated
+testing) use the documented variables:
+
+```bash
+TRACEMAP_RUNTIME_DIR=/tmp/tracemap-alt \
+TRACEMAP_API_PORT=8123 TRACEMAP_WEB_PORT=5323 \
+  scripts/dev-start.sh
+```
 
 The two-terminal README flow is still valid if you prefer foreground processes:
 
@@ -134,7 +147,8 @@ No firewall change, reverse proxy, or `0.0.0.0` binding is required or allowed.
 | `TRACEMAP_PROXY_TARGET` | `http://127.0.0.1:8000` | Vite dev-proxy target for `/api` and `/health`. |
 | `TRACEMAP_API_PYTHON` | `apps/api/.venv/bin/python` if present else `python3` | Interpreter for the Playwright backend. |
 | `TRACEMAP_E2E_API_PORT` / `TRACEMAP_E2E_WEB_PORT` | `8010` / `5273` | Isolated E2E ports. |
-| `TRACEMAP_E2E_DATABASE_URL` | unique temp file | Isolated E2E database. |
+| `TRACEMAP_E2E_DATABASE_URL` | unique temp file | Isolated E2E database. Setting it is **rejected**. |
+| `TRACEMAP_SQLITE_TIMEOUT` | `20` | Seconds a SQLite connection waits for a lock before failing (`0` = fail fast; see GT-0020). |
 
 Default data paths on the reference host:
 
@@ -165,10 +179,11 @@ the top of `api.log` shows why (usually `TRACEMAP_ENV` or the port).
 ## 7. Tests & browser tests
 
 ```bash
-# backend contract + unit/integration (30 tests)
+# backend contract + unit/integration (34 tests)
 source apps/api/.venv/bin/activate
 python -m compileall -q apps/api/tracemap
 python -m pytest -q apps/api/tests
+python -m unittest discover -s scripts/tests -p 'test_*.py'   # 8 deployment safety tests
 python scripts/export_openapi.py --check     # stable route-signature contract
 python scripts/benchmark_domain.py           # synthetic lexical microbenchmark
 
@@ -233,20 +248,22 @@ Never delete `~/tracemap-runtime/data/tracemap-dev.db` to "make tests pass".
 | Check | Command | Result |
 | --- | --- | --- |
 | Python syntax | `python -m compileall -q apps/api/tracemap` | OK |
-| Backend tests | `python -m pytest -q apps/api/tests` | **30 passed** (1 deprecation warning, GT-0008) |
+| Backend tests | `python -m pytest -q apps/api/tests` | **34 passed** (1 deprecation warning, GT-0008) |
+| Deployment safety tests | `python -m unittest discover -s scripts/tests -p 'test_*.py'` | **8 passed** |
 | OpenAPI contract | `python scripts/export_openapi.py --check` | **22 operations / 19 paths OK** |
-| Benchmark | `python scripts/benchmark_domain.py` | median **3.1 ms**, p95 **3.3 ms**, 21 nodes |
+| Benchmark | `python scripts/benchmark_domain.py` | median **3.1 ms**, p95 **4.0 ms**, 21 nodes |
 | Frontend build | `npm run build` | **passed** |
-| Browser E2E | `npm run test:e2e` | **3 passed** |
+| Browser E2E | `npm run test:e2e` | **4 passed** (incl. text-layer PDF upload) |
 | Smoke (live + workflow) | `scripts/smoke-test.sh` | **31 passed, 0 failed** |
 | Restart/persistence | `scripts/smoke-test.sh --restart` | **8 passed** |
 | Prod guard | `TRACEMAP_ENV=production ... create_app()` | raises `RuntimeError` |
 | Loopback only | `ss -tlnp` | `127.0.0.1:8000`, `127.0.0.1:5173` |
 | Dev-data persistence | create → `dev-stop` → `dev-start` → read | project readable |
+| Locked SQLite | POST with an exclusive file lock held | `503 STORAGE_BUSY`, `retryable=true`, no internals (GT-0020) |
 
-Baseline commit `58497c2` (27 tests, 3 E2E) → hardened head `ea14213`
-(30 tests, 3 E2E, scripts). Browser screenshots are written to
-`apps/web/test-results/ui-desktop.png` and `ui-mobile.png`.
+Baseline commit `58497c2` (27 tests, 3 E2E) → corrected tree after the
+independent review of `784511c` (34 backend tests, 8 deployment safety tests,
+4 E2E). See §12 for the cold-start reproduction record.
 
 ## 10. FAQ
 
@@ -275,3 +292,36 @@ Baseline commit `58497c2` (27 tests, 3 E2E) → hardened head `ea14213`
 
 Implementation gaps and rollout blockers: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
 [`BACKEND_OPTIMIZATION_V0.3.md`](BACKEND_OPTIMIZATION_V0.3.md).
+
+## 12. Independent cold-start record (no prior context)
+
+A fresh clone was set up in an empty directory with no inherited venv,
+`node_modules`, database, PID files or processes, pinned to the reviewed commit,
+following §2–§7 verbatim:
+
+```bash
+git clone -b chore/linux-local-deployment-hardening --single-branch \
+  git@github.com:1998x-stack/TraceMap.git /tmp/tracemap-coldstart
+cd /tmp/tracemap-coldstart
+cd apps/api && uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e '.[test]'
+cd ../web && npm ci && npx playwright install chromium
+cd ../..
+# second instance on alternate ports/runtime, isolated from any dev stack
+TRACEMAP_RUNTIME_DIR=/tmp/tracemap-cold-runtime \
+TRACEMAP_API_PORT=8123 TRACEMAP_WEB_PORT=5323 scripts/dev-start.sh
+source apps/api/.venv/bin/activate
+python -m pytest -q apps/api/tests
+python -m unittest discover -s scripts/tests -p 'test_*.py'
+python scripts/export_openapi.py --check
+cd apps/web && npm run build && npm run test:e2e && cd ../..
+scripts/smoke-test.sh && scripts/smoke-test.sh --restart
+scripts/dev-stop.sh
+```
+
+Result after the fixes in this review: 34 backend tests, 8 deployment safety
+tests, OpenAPI OK, build OK, **4** Chromium E2E, 31 + 8 smoke assertions — all
+passing, with no operation touching a development database. Before the fixes,
+the same walkthrough exposed GT-0018 (a safety test failing on exported ports)
+and GT-0019 (`scripts/dev-start.sh` not found because §2 left the shell in
+`apps/web`). Chromium system libraries were already present; no `sudo` was used.
