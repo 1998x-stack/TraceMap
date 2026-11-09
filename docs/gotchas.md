@@ -27,6 +27,7 @@
 | Test commands broke when run outside repository root | [GT-0017](#gt-0017--relative-commands-and-unscoped-tmp-cleanup) |
 | Safety tests fail only when `TRACEMAP_*` is exported in the shell | [GT-0018](#gt-0018--safety-tests-depended-on-ambient-tracemap-variables) |
 | `crypto.randomUUID is not a function` (LAN / plain-HTTP origin) | [GT-0021](#gt-0021--cryptorandomuuid-is-not-a-function-on-a-plain-http-lan-origin) |
+| Explicitly empty environment value was overridden by `.env` on Linux | [GT-0026](#gt-0026--shell-dotenv-loader-overwrote-explicit-empty-environment-variables) |
 | LLM candidate has no valid evidence, but still appears in the map | [GT-0024](#gt-0024--model-claims-with-invalid-or-out-of-scope-anchors-survived) |
 | Candidate generation takes tens of seconds with no visible explanation | [GT-0025](#gt-0025--synchronous-generation-looked-frozen) |
 | `502 LLM_INVALID_OUTPUT` intermittently from `/generate` | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) |
@@ -1193,3 +1194,41 @@ job must report real states through polling or authorized events.
 or cross-reload recovery; those require a queued job architecture.
 
 See `docs/UI_ACADEMIC_GENERATION_V0.4.md` for design and behavior contracts.
+
+---
+
+## GT-0026 — Shell dotenv loader overwrote explicit empty environment variables
+
+**Status:** FIX APPLIED — CI verification pending
+**Class:** Linux Deployment / Configuration consistency
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #7 `scripts/dev-common.sh` vs `tracemap/config.py`.
+
+**Symptoms:** with `TRACEMAP_LLM_API_KEY=''` explicitly exported and a key
+specified in `.env`, the Python loader preserves the empty value, but the
+Bash launcher imported the file value instead. Whitespace in key values also
+had inconsistent handling. This can unexpectedly enable a configured provider.
+
+**Minimal reproduction:** source `scripts/dev-common.sh` with a temporary
+`TRACEMAP_ENV_FILE`, an exported empty `TRACEMAP_TEST_EMPTY`, and a nonempty
+value for that key in the file. Before this change, the shell value was
+overwritten even though the variable was explicitly set.
+
+**Expected:** explicit operator environment variables (including empty ones)
+always take precedence over the .env file, exactly as in `config.py`.
+**Actual (before):** `[[ -z "${!key:-}" ]]` treated an empty but defined
+variable as absent.
+**Root cause:** the shell loader checked value emptiness rather than whether
+the variable was set, and omitted Python's `value.strip()` behavior.
+**Fix:** switch to `[[ ! -v "$key" ]]` and trim value whitespace before
+removing matched quotes.
+**Files:** `scripts/dev-common.sh`, `apps/api/tests/test_config.py`.
+**Related tests:** `test_shell_dotenv_respects_explicit_empty_env_and_trims_values`.
+**Verification:** pending independent GitHub CI.
+**Prevention:** retain cross-language configuration parity tests; never log
+actual `TRACEMAP_LLM_API_KEY` values.
+
+**Scope:** this prevents accidental overwrite at shell startup. It does not
+replace production secret management or a security audit of arbitrary
+operator-configured LLM URLs.

@@ -54,3 +54,27 @@ def test_missing_file_is_a_noop(tmp_path):
 def test_default_env_file_is_repo_root_dotenv():
     assert config.default_env_file().name == ".env"
     assert (config.repo_root() / "apps" / "api").is_dir()
+
+def test_shell_dotenv_respects_explicit_empty_env_and_trims_values(tmp_path):
+    """The Bash and Python loaders must agree on operator environment precedence."""
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    file = tmp_path / ".env"
+    file.write_text(
+        "TRACEMAP_TEST_EMPTY=injected\n"
+        "TRACEMAP_TEST_SPACED=   academic value   \n"
+        "TRACEMAP_TEST_QUOTED='quoted value'\n"
+    )
+    env = os.environ.copy()
+    env.update({
+        "TRACEMAP_DOTENV": "1",
+        "TRACEMAP_ENV_FILE": str(file),
+        "TRACEMAP_TEST_EMPTY": "",
+    })
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; printf "<%s>|<%s>|<%s>" "$TRACEMAP_TEST_EMPTY" "$TRACEMAP_TEST_SPACED" "$TRACEMAP_TEST_QUOTED"',
+         "bash", str(root / "scripts" / "dev-common.sh")],
+        env=env, text=True, capture_output=True, check=True,
+    )
+    assert result.stdout == "<>|<academic value>|<quoted value>"

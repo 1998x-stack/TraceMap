@@ -40,9 +40,13 @@ if [[ "${TRACEMAP_DOTENV:-1}" != "0" ]]; then
       key="${key#"${key%%[![:space:]]*}"}"
       key="${key%"${key##*[![:space:]]}"}"
       if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then continue; fi
+      # Match Python's parse_env(value.strip()) and never reinterpret quotes
+      # around a value while preserving an explicitly exported empty variable.
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
       if [[ ${#value} -ge 2 && "$value" == \"*\" && "$value" == *\" ]]; then value="${value:1:${#value}-2}"; fi
       if [[ ${#value} -ge 2 && "$value" == \'*\' && "$value" == *\' ]]; then value="${value:1:${#value}-2}"; fi
-      if [[ -z "${!key:-}" ]]; then export "$key=$value"; fi
+      if [[ ! -v "$key" ]]; then export "$key=$value"; fi
     done < "$ENV_FILE"
   fi
 fi
