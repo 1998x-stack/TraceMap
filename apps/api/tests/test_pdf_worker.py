@@ -56,7 +56,7 @@ def test_pdf_parser_timeout_terminates_worker():
             self.alive = False
         def kill(self):
             self.alive = False
-        def join(self, _timeout=None):
+        def join(self, timeout=None):
             pass
 
     process = FakeProcess()
