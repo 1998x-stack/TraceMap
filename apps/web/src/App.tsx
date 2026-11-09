@@ -1,5 +1,5 @@
 import React,{useCallback,useEffect,useMemo,useState} from 'react';
-import ReactFlow,{Background,Controls,MiniMap,type NodeMouseHandler} from '@xyflow/react';
+import { ReactFlow,Background,Controls,MiniMap,type NodeMouseHandler } from '@xyflow/react';
 import {Api,ApiError,type Project,type Source,type MapDocument,type MapNode,type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal} from './api';
 import {layout,sliceCodepoints} from './layout';
 
