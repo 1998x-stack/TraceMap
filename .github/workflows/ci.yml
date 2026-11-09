@@ -88,7 +88,7 @@ jobs:
   deployment-lifecycle:
     runs-on: ubuntu-latest
     env:
-      TRACEMAP_RUNTIME_DIR: ${{ runner.temp }}/tracemap-deployment-ci
+      TRACEMAP_RUNTIME_DIR: /tmp/tracemap-deployment-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -124,5 +124,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tracemap-linux-lifecycle-debug
-          path: ${{ runner.temp }}/tracemap-deployment-ci/logs
+          path: /tmp/tracemap-deployment-${{ github.run_id }}-${{ github.run_attempt }}/logs
           if-no-files-found: ignore
