@@ -317,8 +317,11 @@ def purge_source(tree: dict, source_id: str) -> dict:
 
     # The root is structural and must survive. Remove any root-level source refs
     # without deleting the project itself.
+    root_is_affected = root_id in directly_affected
     directly_affected.discard(root_id)
     removed: set[str] = set()
+    if root_is_affected:
+        removed.update(descendants(nodes, root_id) - {root_id})
     for node_id in directly_affected:
         removed.update(descendants(nodes, node_id))
 

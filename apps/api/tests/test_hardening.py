@@ -431,3 +431,66 @@ def test_local_dev_api_rejects_forwarded_proxy_headers_and_nonlocal_host(tmp_pat
             assert loopback.get("/health").status_code == 200
     finally:
         app.state.engine.dispose()
+
+
+def test_startup_sweep_scrubs_legacy_deleted_source_residue(client, headers, create_project):
+    """An existing SQLite DB from the old implementation must be scrubbed on startup."""
+    import json
+    from sqlalchemy import delete, select
+    from tracemap.db import Change, Draft, Source
+    from tracemap.main import purge_legacy_source_residue
+
+    secret = "LEGACY_DELETED_SOURCE_SENTINEL_3b92"
+    pid = create_project("legacy purge")["id"]
+    source = client.post(
+        f"/api/v1/projects/{pid}/sources/text",
+        json={"title": "old source", "text": f"{secret} legacy quote", "format": "text"},
+        headers=h(headers, 0, "legacy-source-0001"),
+    )
+    sid = source.json()["sourceId"]
+    paragraph = client.get(f"/api/v1/projects/{pid}/sources/{sid}/paragraphs", headers=headers).json()["items"][0]
+    root = client.get(f"/api/v1/projects/{pid}/map", headers=headers).json()["rootId"]
+    edit = client.post(
+        f"/api/v1/projects/{pid}/nodes/ops",
+        json={"operations": [{"op": "add", "parentId": root, "node": {
+            "type": "claim", "title": secret,
+            "evidenceRefs": [{"sourceId": sid, "paragraphId": paragraph["id"],
+                              "start": 0, "end": len(paragraph["text"]),
+                              "exactQuote": paragraph["text"]}],
+        }}]},
+        headers=h(headers, 1, "legacy-edit-0001"),
+    )
+    assert edit.status_code == 200
+    generated = client.post(
+        f"/api/v1/projects/{pid}/generate",
+        json={"goal": "legacy", "sourceIds": [sid]},
+        headers=h(headers, 2, "legacy-generate-0001"),
+    )
+    draft_id = generated.json()["draftId"]
+
+    # Simulate the old code path: delete only Source/Paragraph rows, leaving JSON residue.
+    with client.app.state.Session.begin() as session:
+        session.execute(delete(Source).where(Source.id == sid))
+
+    assert purge_legacy_source_residue(client.app.state.Session) == 1
+    assert purge_legacy_source_residue(client.app.state.Session) == 0
+
+    current = client.get(f"/api/v1/projects/{pid}/map", headers=headers)
+    assert secret not in current.text
+    assert len(current.json()["nodes"]) == 1
+    assert client.get(f"/api/v1/projects/{pid}/sources/{sid}/paragraphs", headers=headers).status_code == 404
+    draft = client.get(f"/api/v1/projects/{pid}/generation-drafts/{draft_id}", headers=headers)
+    assert draft.json()["status"] == "invalidated"
+    assert secret not in draft.text
+    history = client.get(f"/api/v1/projects/{pid}/history", headers=headers)
+    assert any(item["kind"] == "source_delete_legacy_purge" for item in history.json()["items"])
+
+    with client.app.state.Session() as session:
+        changes = session.scalars(select(Change).where(Change.project_id == pid)).all()
+        drafts = session.scalars(select(Draft).where(Draft.project_id == pid)).all()
+        snapshot_json = json.dumps(
+            [{"before": row.before_json, "after": row.after_json} for row in changes],
+            ensure_ascii=False,
+        )
+        assert secret not in snapshot_json
+        assert all(row.status == "invalidated" for row in drafts)

@@ -54,6 +54,94 @@ def storage_error_status(exc: BaseException) -> tuple[int, str, str, bool]:
     return 500, "INTERNAL_ERROR", "服务器内部错误", False
 
 
+def _source_ids_in(value: Any) -> set[str]:
+    """Collect source IDs from persisted JSON without trusting its shape."""
+    found: set[str] = set()
+    if isinstance(value, dict):
+        source_id = value.get("sourceId")
+        if isinstance(source_id, str) and source_id:
+            found.add(source_id)
+        for child in value.values():
+            found.update(_source_ids_in(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.update(_source_ids_in(child))
+    return found
+
+
+def purge_legacy_source_residue(Session) -> int:
+    """Idempotently scrub pre-Phase-0 references whose Source row is gone.
+
+    Older builds marked anchors source_deleted but retained copied quote text in
+    map/history/draft JSON. Run once at app startup so an existing SQLite DB is
+    brought under the new live-data deletion contract before serving requests.
+    """
+    affected_projects = 0
+    with Session.begin() as s:
+        projects = s.scalars(select(Project)).all()
+        for project in projects:
+            changes = s.scalars(select(Change).where(Change.project_id == project.id)).all()
+            drafts = s.scalars(select(Draft).where(Draft.project_id == project.id)).all()
+            candidate_ids = _source_ids_in(project.map_json)
+            for change in changes:
+                candidate_ids.update(_source_ids_in(change.before_json))
+                candidate_ids.update(_source_ids_in(change.after_json))
+            for draft in drafts:
+                candidate_ids.update(_source_ids_in(draft.payload))
+            if not candidate_ids:
+                continue
+
+            live_ids = set(s.scalars(
+                select(Source.id).where(Source.project_id == project.id)
+            ).all())
+            missing_ids = candidate_ids - live_ids
+            if not missing_ids:
+                continue
+
+            before = deepcopy(project.map_json)
+            after = deepcopy(before)
+            for source_id in sorted(missing_ids):
+                after = purge_source(after, source_id)
+            project.map_json = after
+
+            for change in changes:
+                before_snapshot = change.before_json
+                after_snapshot = change.after_json
+                for source_id in sorted(missing_ids):
+                    before_snapshot = purge_source(before_snapshot, source_id)
+                    after_snapshot = purge_source(after_snapshot, source_id)
+                change.before_json = before_snapshot
+                change.after_json = after_snapshot
+
+            # A stale candidate may carry paraphrases or operations not fully
+            # represented by EvidenceRefs. Clear every draft in the affected
+            # project rather than attempting unsafe partial redaction.
+            for draft in drafts:
+                draft.payload = {"invalidatedReason": "legacy_source_purged"}
+                draft.status = "invalidated"
+
+            safe_before = deepcopy(before)
+            for source_id in sorted(missing_ids):
+                safe_before = purge_source(safe_before, source_id)
+            rev_before = project.revision
+            project.revision += 1
+            project.updated_at = now()
+            s.add(Change(
+                id=uid(), project_id=project.id, owner_id=project.owner_id,
+                rev_before=rev_before, rev_after=project.revision,
+                kind="source_delete_legacy_purge",
+                before_json=safe_before, after_json=after,
+            ))
+            affected_projects += 1
+
+    if affected_projects:
+        LOGGER.warning(
+            "scrubbed legacy deleted-source residue in %s project(s)",
+            affected_projects,
+        )
+    return affected_projects
+
+
 class NewProject(BaseModel):
     title: str = Field(min_length=1, max_length=80)
     goal: str = Field(default="", max_length=1000)
@@ -107,6 +195,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     engine = engine_for(database_url)
     Base.metadata.create_all(engine)  # development convenience; production requires migrations
     Session = session_factory(engine)
+    purge_legacy_source_residue(Session)
 
     app = FastAPI(title="TraceMap Development API", version="0.1.0", description="Dev-only auth, extractive demonstration generation; not yet real AI.")
     app.state.engine = engine

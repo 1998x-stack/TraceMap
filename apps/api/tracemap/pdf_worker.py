@@ -104,6 +104,22 @@ def _stop_process(process: Any) -> None:
         process.join(timeout=1)
 
 
+def _wait_for_result(process: Any, receiver: Any, timeout: float) -> tuple[str, Any]:
+    if not receiver.poll(timeout):
+        _stop_process(process)
+        raise PDFParseError(
+            "PDF_PARSE_TIMEOUT",
+            "PDF 解析超过允许的执行时间，文件过于复杂或无法安全处理",
+            422,
+        )
+    try:
+        return receiver.recv()
+    except EOFError:
+        raise PDFParseError(
+            "PDF_WORKER_FAILED", "PDF 隔离解析进程异常退出", 422
+        ) from None
+
+
 def _raise_worker_error(code: str) -> None:
     if code in {"PDF_ENCRYPTED", "PDF_TOO_MANY_PAGES", "PDF_PARSE_FAILED"}:
         raise PDFParseError(
@@ -154,19 +170,7 @@ def parse_pdf_isolated(
         process.start()
         started = True
         sender.close()
-        if not receiver.poll(timeout):
-            _stop_process(process)
-            raise PDFParseError(
-                "PDF_PARSE_TIMEOUT",
-                "PDF 解析超过允许的执行时间，文件过于复杂或无法安全处理",
-                422,
-            )
-        try:
-            status, payload = receiver.recv()
-        except EOFError:
-            raise PDFParseError(
-                "PDF_WORKER_FAILED", "PDF 隔离解析进程异常退出", 422
-            ) from None
+        status, payload = _wait_for_result(process, receiver, timeout)
         process.join(timeout=1)
         if process.is_alive():
             _stop_process(process)

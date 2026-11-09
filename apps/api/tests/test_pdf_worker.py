@@ -38,21 +38,17 @@ def test_pdf_parser_rejects_encrypted_and_excessive_page_documents():
     assert too_many.value.status == 415
 
 
-def test_pdf_parser_timeout_terminates_worker(monkeypatch):
+def test_pdf_parser_timeout_terminates_worker():
     from tracemap import pdf_worker
 
-    class Connection:
+    class FakeConnection:
         def poll(self, _timeout):
             return False
-        def close(self):
-            pass
 
     class FakeProcess:
-        def __init__(self, **_kwargs):
+        def __init__(self):
             self.alive = True
             self.terminated = False
-        def start(self):
-            pass
         def is_alive(self):
             return self.alive
         def terminate(self):
@@ -63,18 +59,8 @@ def test_pdf_parser_timeout_terminates_worker(monkeypatch):
         def join(self, _timeout=None):
             pass
 
-    class FakeContext:
-        def __init__(self):
-            self.process = FakeProcess()
-        def Pipe(self, duplex=False):
-            assert duplex is False
-            return Connection(), Connection()
-        def Process(self, **_kwargs):
-            return self.process
-
-    context = FakeContext()
-    monkeypatch.setattr(pdf_worker.multiprocessing, "get_context", lambda _method: context)
+    process = FakeProcess()
     with pytest.raises(pdf_worker.PDFParseError) as timeout:
-        pdf_worker.parse_pdf_isolated(b"%PDF-fake", timeout_seconds=0.01)
+        pdf_worker._wait_for_result(process, FakeConnection(), 0.01)
     assert timeout.value.code == "PDF_PARSE_TIMEOUT"
-    assert context.process.terminated
+    assert process.terminated
