@@ -86,7 +86,7 @@ class LLMError(RuleError):
 def _int_env(name: str, default: int, low: int, high: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
-    except (ValueError, RecursionError):
+    except ValueError:
         return default
     return value if low <= value <= high else default
 
