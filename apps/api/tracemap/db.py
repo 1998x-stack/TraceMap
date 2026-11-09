@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, ForeignKey, Integer, String, DateTime, JSON, Text, UniqueConstraint, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -84,8 +85,21 @@ class Idempotency(Base):
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+def sqlite_busy_timeout() -> int:
+    """Seconds a SQLite connection waits for a lock before raising.
+
+    Configurable so operators and tests can shorten the wait; defaults to 20 s
+    to preserve the original development behaviour (see GT-0020).
+    """
+    try:
+        value = int(os.getenv("TRACEMAP_SQLITE_TIMEOUT", "20"))
+    except ValueError:
+        return 20
+    return value if 0 <= value <= 600 else 20
+
+
 def engine_for(url: str):
-    kwargs = {"connect_args": {"check_same_thread": False, "timeout": 20}} if url.startswith("sqlite") else {}
+    kwargs = {"connect_args": {"check_same_thread": False, "timeout": sqlite_busy_timeout()}} if url.startswith("sqlite") else {}
     engine = create_engine(url, pool_pre_ping=True, **kwargs)
     if url.startswith("sqlite"):
         @event.listens_for(engine, "connect")

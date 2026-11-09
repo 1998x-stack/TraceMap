@@ -16,3 +16,9 @@ coverage/
 .DS_Store
 apps/web/test-results/
 apps/web/playwright-report/
+
+# TypeScript incremental build cache (tsc -b)
+*.tsbuildinfo
+
+# pi agent harness local state
+.pi/

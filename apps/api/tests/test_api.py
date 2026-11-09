@@ -202,3 +202,74 @@ def test_cross_project_reference_rejected(client,headers,create_project):
        headers=h(headers,0,'cross-project-111'))
     assert r.status_code==422,r.text
     assert client.get(f"/api/v1/projects/{b['id']}/map",headers=headers).json()['revision']==0
+
+
+def build_text_layer_pdf(pages):
+    """Build a minimal, valid multi-page PDF with an extractable text layer.
+
+    ``pages`` is a list of pages; each page is a list of text lines. This lets a
+    test exercise the real pypdf parsing path without committing a binary asset.
+    """
+    assert pages
+    objs = {1: b"<< /Type /Catalog /Pages 2 0 R >>",
+            3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"}
+    kids = []
+    for k, lines in enumerate(pages):
+        content = "BT /F1 14 Tf 72 720 Td 18 TL\n" + "\n".join(f"({t}) Tj T*" for t in lines) + "\nET"
+        stream = content.encode("latin-1")
+        content_num, page_num = 4 + 2 * k, 5 + 2 * k
+        kids.append(f"{page_num} 0 R")
+        objs[content_num] = (b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+        objs[page_num] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                          f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_num} 0 R >>").encode()
+    objs[2] = ("<< /Type /Pages /Kids [" + " ".join(kids) + f"] /Count {len(pages)} >>").encode()
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = {}
+    for num in sorted(objs):
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + objs[num] + b"\nendobj\n"
+    size = max(objs) + 1
+    xref = len(out)
+    out += f"xref\n0 {size}\n".encode() + b"0000000000 65535 f \n"
+    for num in range(1, size):
+        out += f"{offsets[num]:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def test_text_layer_pdf_parsed_with_page_numbers(client, headers, create_project):
+    pid = create_project('pdf happy path')['id']
+    data = build_text_layer_pdf([["Page one evidence line."], ["Page two findings here."]])
+    response = client.post(f'/api/v1/projects/{pid}/sources',
+                           headers=h(headers, 0, 'pdf-happy-0001'),
+                           files={'file': ('report.pdf', data, 'application/pdf')})
+    assert response.status_code == 202, response.text
+    sid = response.json()['sourceId']
+    assert response.json()['revision'] == 1
+    sources = client.get(f'/api/v1/projects/{pid}/sources', headers=headers).json()['items']
+    assert len(sources) == 1 and sources[0]['kind'] == 'pdf'
+    assert sources[0]['extractedCharCount'] > 0
+    items = client.get(f'/api/v1/projects/{pid}/sources/{sid}/paragraphs', headers=headers).json()['items']
+    assert items, 'expected extracted paragraphs'
+    pages = {p['pageNo'] for p in items}
+    assert pages == {1, 2}, f'page mapping wrong: {pages}'
+    text = ' '.join(p['text'] for p in items)
+    assert 'Page one evidence line' in text and 'Page two findings here' in text
+
+
+def test_upload_rejects_extension_magic_mismatch_and_binary(client, headers, create_project):
+    pid = create_project('pdf rejects')['id']
+    cases = [
+        ('report.pdf', b'not a pdf at all', 'application/pdf', 'UNSUPPORTED_MEDIA_TYPE'),
+        ('notes.txt', b'%PDF-1.4 fake', 'text/plain', 'UNSUPPORTED_MEDIA_TYPE'),
+        ('data.bin', b'\x00\x01\x02binary', 'application/octet-stream', 'UNSUPPORTED_MEDIA_TYPE'),
+    ]
+    for i, (name, payload, mime, code) in enumerate(cases):
+        r = client.post(f'/api/v1/projects/{pid}/sources',
+                        headers=h(headers, 0, f'pdf-mismatch-{i:04d}'),
+                        files={'file': (name, payload, mime)})
+        assert r.status_code == 415, r.text
+        assert r.json()['error']['code'] == code, r.text
+    # none of the rejected uploads may leave a ghost source or bump the revision
+    assert client.get(f'/api/v1/projects/{pid}/sources', headers=headers).json()['items'] == []
+    assert client.get(f'/api/v1/projects/{pid}/map', headers=headers).json()['revision'] == 0
