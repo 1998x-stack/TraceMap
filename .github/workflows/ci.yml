@@ -112,6 +112,31 @@ jobs:
         run: |
           scripts/smoke-test.sh
           scripts/smoke-test.sh --restart
+      - name: Playwright must reject explicit shared database override
+        working-directory: apps/web
+        run: |
+          if TRACEMAP_E2E_DATABASE_URL=sqlite:////tmp/tracemap-shared.db npx playwright test --list > /tmp/tracemap-db-override-rejection.log 2>&1; then
+            echo "E2E unexpectedly accepted shared database override"
+            exit 1
+          fi
+          grep -q "E2E database override is prohibited" /tmp/tracemap-db-override-rejection.log
+      - name: Restart test must not mutate an inherited database URL
+        run: |
+          sentinel="$(mktemp -d /tmp/tracemap-sentinel.XXXXXX)"
+          trap 'rm -rf -- "$sentinel"' EXIT
+          python - "$sentinel/user.db" <<'PY'
+          import sqlite3,sys
+          db=sqlite3.connect(sys.argv[1])
+          db.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+          db.execute("INSERT INTO sentinel VALUES ('unchanged')")
+          db.commit()
+          db.close()
+          PY
+          before="$(sha256sum "$sentinel/user.db" | cut -d' ' -f1)"
+          TRACEMAP_DATABASE_URL="sqlite:///$sentinel/user.db" scripts/smoke-test.sh --restart
+          after="$(sha256sum "$sentinel/user.db" | cut -d' ' -f1)"
+          test "$before" = "$after" || { echo "Restart smoke modified inherited database"; exit 1; }
+          echo "Inherited database sentinel unchanged"
       - name: Stop and verify service lifecycle
         run: |
           scripts/dev-stop.sh
