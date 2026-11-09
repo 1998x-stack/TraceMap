@@ -1,7 +1,7 @@
 from copy import deepcopy
 import pytest
 from tracemap.core import (canon, split_paragraphs, root_map, verify_ref, validate_tree,
-                           apply_ops, degrade_source, markdown_export, RuleError, uid)
+                           apply_ops, purge_source, markdown_export, RuleError, uid)
 
 
 def test_normalization_and_unicode_codepoints():
@@ -61,16 +61,21 @@ def test_apply_ops_atomic_protected_ai_scope_and_move_cycle():
     assert tree == original
 
 
-def test_degrade_deleted_source_and_export():
+def test_purge_deleted_source_removes_evidence_subtree_and_export():
     tree = root_map('😀 Research')
-    a = {"id": uid(), "parentId": tree['rootId'], "title": "Claim", "type": "claim", "origin": "ai",
+    a_id, child_id, independent_id = uid(), uid(), uid()
+    a = {"id": a_id, "parentId": tree['rootId'], "title": "Claim", "type": "claim", "origin": "ai",
          "verification": "verified_by_user", "sortOrder": 0, "evidenceRefs": [{
              "sourceId": "S", "paragraphId": "P", "start": 0, "end": 2,
              "exactQuote": "你好", "anchorStatus": "anchored"}]}
-    tree['nodes'].append(a)
-    after = degrade_source(tree, 'S')
-    assert after['nodes'][-1]['verification'] == 'unverified'
-    assert after['nodes'][-1]['evidenceRefs'][0]['anchorStatus'] == 'source_deleted'
-    assert tree['nodes'][-1]['verification'] == 'verified_by_user'
+    child = {"id": child_id, "parentId": a_id, "title": "Derived child", "type": "question", "origin": "ai",
+             "verification": "unverified", "sortOrder": 0, "evidenceRefs": []}
+    independent = {"id": independent_id, "parentId": tree['rootId'], "title": "Independent", "type": "question",
+                   "origin": "user", "verification": "unverified", "sortOrder": 1, "evidenceRefs": []}
+    tree['nodes'].extend([a, child, independent])
+    after = purge_source(tree, 'S')
+    assert [node['id'] for node in after['nodes']] == [tree['rootId'], independent_id]
+    assert tree['nodes'][1]['verification'] == 'verified_by_user'
     md = markdown_export(after, {})
-    assert '# 😀 Research' in md and '## Claim' in md and 'source_deleted' in md
+    assert '# 😀 Research' in md and 'Independent' in md
+    assert 'Claim' not in md and '你好' not in md and 'Derived child' not in md

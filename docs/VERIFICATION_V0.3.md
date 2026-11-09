@@ -46,8 +46,25 @@ python scripts/benchmark_domain.py
 
 - 真实多用户正式认证、生产环境 IDOR 红队和完整 GDPR/隐私数据生命周期。
 - PostgreSQL 双事务竞争、故障恢复、异步 Worker 重试与死信处理。
-- PDF 解压炸弹与资源受限隔离容器测试。
+- 恶意 PDF 解压炸弹黄金样本、独立 UID/container/seccomp 沙箱和网络/文件系统隔离测试。当前只验证带 rlimit 的同 UID 子进程。
 - LLM provider、引用召回率、事实准确率、跨文档冲突发现、提示注入对抗黄金集。
 - 真实 Xmind 导入矩阵、正式性能 SLO、真实用户实验。
 
 请把上述列为开放事项，不要因为 SQLite 本地测试或浏览器 UI 测试绿色就标记 G1–G5 全部完成。
+
+
+## 6. Phase 0 verification (2026-11-09)
+
+GitHub Actions [run 42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) on the Phase 0 PR head:
+
+| Job | Result |
+|---|---|
+| Python API | **62 passed**, 1 Starlette/httpx deprecation warning |
+| Web build | PASS |
+| Chromium E2E | **12 passed** |
+| Linux live smoke | **31 passed**, 0 failed, 0 skipped |
+| Linux isolated restart/persistence | **8 passed** per cycle; final stop and port release verified |
+
+New regression coverage includes forwarded proxy headers and Host allowlisting, transactional source purge across current maps/exports/Drafts/Change snapshots, startup cleanup for legacy missing-Source references, PDF child-process extraction/limits/timeout termination, and safe PID-reuse handling.
+
+**NOT RUN:** the user's actual Linux host listener/firewall configuration, SQLite WAL/free-page forensic erasure, external backup expiry, malicious PDF corpus fuzzing, and a separate UID/container/seccomp sandbox. These are not implied by green CI.

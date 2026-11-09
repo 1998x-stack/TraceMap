@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
-import io
 import json
 import logging
 import os
@@ -20,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
@@ -27,10 +27,11 @@ from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from . import config  # noqa: F401  (loads .env before any TRACEMAP_* value is read — see config.py)
 from .db import Base, Project, Source, Paragraph, Change, Draft, Idempotency, Job, engine_for, session_factory, now
 from .core import (RuleError, uid, sha, canon, split_paragraphs, root_map,
-                   validate_tree, verify_ref, apply_ops, degrade_source, extractive_draft,
+                   validate_tree, verify_ref, apply_ops, purge_source, extractive_draft,
                    markdown_export, MAX_FILE_BYTES, MAX_TOTAL_CHARS, MAX_SOURCES,
                    EXTRACTIVE_SELECTION_POLICY)
 from . import llm
+from .pdf_worker import PDFParseError, parse_pdf_isolated
 
 # Largest revision we accept from a client. Chosen to be far below the SQLite
 # signed-64-bit limit (the CAS update writes expected + 1) and at the JavaScript
@@ -51,6 +52,94 @@ def storage_error_status(exc: BaseException) -> tuple[int, str, str, bool]:
     if isinstance(exc, SQLAlchemyError):
         return 500, "STORAGE_ERROR", "本地存储发生错误", False
     return 500, "INTERNAL_ERROR", "服务器内部错误", False
+
+
+def _source_ids_in(value: Any) -> set[str]:
+    """Collect source IDs from persisted JSON without trusting its shape."""
+    found: set[str] = set()
+    if isinstance(value, dict):
+        source_id = value.get("sourceId")
+        if isinstance(source_id, str) and source_id:
+            found.add(source_id)
+        for child in value.values():
+            found.update(_source_ids_in(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.update(_source_ids_in(child))
+    return found
+
+
+def purge_legacy_source_residue(Session) -> int:
+    """Idempotently scrub pre-Phase-0 references whose Source row is gone.
+
+    Older builds marked anchors source_deleted but retained copied quote text in
+    map/history/draft JSON. Run once at app startup so an existing SQLite DB is
+    brought under the new live-data deletion contract before serving requests.
+    """
+    affected_projects = 0
+    with Session.begin() as s:
+        projects = s.scalars(select(Project)).all()
+        for project in projects:
+            changes = s.scalars(select(Change).where(Change.project_id == project.id)).all()
+            drafts = s.scalars(select(Draft).where(Draft.project_id == project.id)).all()
+            candidate_ids = _source_ids_in(project.map_json)
+            for change in changes:
+                candidate_ids.update(_source_ids_in(change.before_json))
+                candidate_ids.update(_source_ids_in(change.after_json))
+            for draft in drafts:
+                candidate_ids.update(_source_ids_in(draft.payload))
+            if not candidate_ids:
+                continue
+
+            live_ids = set(s.scalars(
+                select(Source.id).where(Source.project_id == project.id)
+            ).all())
+            missing_ids = candidate_ids - live_ids
+            if not missing_ids:
+                continue
+
+            before = deepcopy(project.map_json)
+            after = deepcopy(before)
+            for source_id in sorted(missing_ids):
+                after = purge_source(after, source_id)
+            project.map_json = after
+
+            for change in changes:
+                before_snapshot = change.before_json
+                after_snapshot = change.after_json
+                for source_id in sorted(missing_ids):
+                    before_snapshot = purge_source(before_snapshot, source_id)
+                    after_snapshot = purge_source(after_snapshot, source_id)
+                change.before_json = before_snapshot
+                change.after_json = after_snapshot
+
+            # A stale candidate may carry paraphrases or operations not fully
+            # represented by EvidenceRefs. Clear every draft in the affected
+            # project rather than attempting unsafe partial redaction.
+            for draft in drafts:
+                draft.payload = {"invalidatedReason": "legacy_source_purged"}
+                draft.status = "invalidated"
+
+            safe_before = deepcopy(before)
+            for source_id in sorted(missing_ids):
+                safe_before = purge_source(safe_before, source_id)
+            rev_before = project.revision
+            project.revision += 1
+            project.updated_at = now()
+            s.add(Change(
+                id=uid(), project_id=project.id, owner_id=project.owner_id,
+                rev_before=rev_before, rev_after=project.revision,
+                kind="source_delete_legacy_purge",
+                before_json=safe_before, after_json=after,
+            ))
+            affected_projects += 1
+
+    if affected_projects:
+        LOGGER.warning(
+            "scrubbed legacy deleted-source residue in %s project(s)",
+            affected_projects,
+        )
+    return affected_projects
 
 
 class NewProject(BaseModel):
@@ -106,6 +195,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     engine = engine_for(database_url)
     Base.metadata.create_all(engine)  # development convenience; production requires migrations
     Session = session_factory(engine)
+    purge_legacy_source_residue(Session)
 
     app = FastAPI(title="TraceMap Development API", version="0.1.0", description="Dev-only auth, extractive demonstration generation; not yet real AI.")
     app.state.engine = engine
@@ -115,9 +205,28 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def _local_dev_only(request: Request, call_next):
-        # Protect against accidentally listening on 0.0.0.0 in the prototype.
-        # A same-host reverse proxy could still forward requests, so this is
-        # defense-in-depth, NOT production authentication or authorization.
+        # Defense in depth for this deliberately insecure development identity.
+        # Reject common reverse-proxy metadata rather than treating a loopback
+        # proxy as if it were the original local browser.
+        proxy_headers = {
+            "forwarded", "x-forwarded-for", "x-forwarded-host",
+            "x-forwarded-proto", "x-forwarded-port", "x-real-ip",
+            "x-original-forwarded-for", "x-original-host", "x-original-proto",
+            "x-client-ip", "true-client-ip", "cf-connecting-ip", "via",
+            "x-envoy-external-address", "x-cluster-client-ip",
+            "x-forwarded-client-cert", "x-forwarded-ssl",
+        }
+        if any(name in request.headers for name in proxy_headers):
+            return JSONResponse(status_code=403, content={"error": {
+                "code": "DEV_PROXY_HEADERS_REJECTED",
+                "message": "开发接口不接受反向代理转发请求", "retryable": False}})
+
+        host = (request.url.hostname or "").lower()
+        if host not in {"127.0.0.1", "::1", "localhost", "testserver"}:
+            return JSONResponse(status_code=403, content={"error": {
+                "code": "DEV_HOST_NOT_LOCAL",
+                "message": "开发接口仅接受本机 Host", "retryable": False}})
+
         client_ip = request.client.host if request.client else None
         if client_ip not in {"127.0.0.1", "::1", "localhost", "testclient"}:
             return JSONResponse(status_code=403, content={"error": {
@@ -323,6 +432,17 @@ def create_app(database_url: str | None = None) -> FastAPI:
             problem("PAYLOAD_TOO_LARGE", "文件不能超过 10 MB", 413)
         filename = file.filename or "upload"
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        scope = f"POST:{pid}:sources"
+        payload = {"filename": filename, "sha256": hashlib.sha256(content).hexdigest(), "revision": expected}
+
+        # Check replay, ownership and source-count quota before parser work.
+        # Re-check inside the final transaction for race safety.
+        with Session() as s:
+            if (prev := replay(s, user, scope, key, payload)) is not None:
+                return prev
+            p = get_project(s, pid, user)
+            source_limits(s, p.id, 0)
+
         pages = None
         if ext in ("txt", "md"):
             try:
@@ -333,23 +453,19 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 problem("UNSUPPORTED_MEDIA_TYPE", "文件内容与扩展名不匹配", 415)
             kind = "markdown" if ext == "md" else "text"
         elif ext == "pdf" and content.startswith(b"%PDF-"):
-            from pypdf import PdfReader
             try:
-                reader = PdfReader(io.BytesIO(content), strict=True)
-                if reader.is_encrypted or len(reader.pages) > 100:
-                    problem("UNSUPPORTED_MEDIA_TYPE", "PDF 受密码保护或超过 100 页", 415)
-                pages = [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
-                text = "\n\n".join(part for _, part in pages)
-            except RuleError:
-                raise
-            except Exception:
-                problem("UNSUPPORTED_MEDIA_TYPE", "PDF 无法安全解析", 415)
+                pages = await run_in_threadpool(
+                    parse_pdf_isolated, content, max_pages=100, max_chars=MAX_TOTAL_CHARS
+                )
+            except PDFParseError as exc:
+                problem(exc.code, exc.message, exc.status)
+            text = "\n\n".join(part for _, part in pages)
             kind = "pdf"
         else:
             problem("UNSUPPORTED_MEDIA_TYPE", "仅支持 UTF-8 .txt/.md 和有文本层的 PDF", 415)
+
         with Session.begin() as s:
-            payload = {"filename": filename, "sha256": hashlib.sha256(content).hexdigest(), "revision": expected}
-            if (prev := replay(s, user, f"POST:{pid}:sources", key, payload)) is not None:
+            if (prev := replay(s, user, scope, key, payload)) is not None:
                 return prev
             p = get_project(s, pid, user)
             source = save_source(s, p, filename, kind, text, pages)
@@ -357,7 +473,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             append_change(s, p, p.map_json, p.map_json, expected, user, "source_add")
             job_id = uid()
             s.add(Job(id=job_id, project_id=pid, status="completed", kind="source_parse_sync", result_id=source.id))
-            return record(s, user, f"POST:{pid}:sources", key, payload,
+            return record(s, user, scope, key, payload,
                           {"sourceId": source.id, "jobId": job_id, "status": "ready", "revision": revision}, 202)
 
     @app.get("/api/v1/projects/{pid}/sources/{sid}/paragraphs")
@@ -376,21 +492,47 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def remove_source(pid: str, sid: str, authorization: str | None = Header(None), if_match: str | None = Header(None), idempotency_key: str | None = Header(None)):
         user, expected, key = owner(authorization), get_revision(if_match), require_key(idempotency_key)
         with Session.begin() as s:
+            scope = f"DELETE:{pid}:source:{sid}"
             payload = {"sid": sid, "revision": expected}
-            if (prev := replay(s, user, f"DELETE:{pid}:source:{sid}", key, payload)) is not None:
+            if (prev := replay(s, user, scope, key, payload)) is not None:
                 return prev
             p = get_project(s, pid, user)
             source = s.scalar(select(Source).where(Source.project_id == pid, Source.id == sid))
             if not source:
                 problem("NOT_FOUND", "资料不存在", 404)
+
             before = deepcopy(p.map_json)
-            after = degrade_source(before, sid)
+            after = purge_source(before, sid)
             validate_tree(after, paragraphs_of(s, p.id))
+            purged_nodes = len(before["nodes"]) - len(after["nodes"])
             claim_revision(s, p, expected)
             p.map_json = after
+
+            # Drafts may contain source excerpts, model paraphrases or proposed
+            # operations. Invalidate and clear all candidates rather than infer
+            # partial provenance from transient model output.
+            drafts = s.scalars(select(Draft).where(Draft.project_id == pid)).all()
+            for draft in drafts:
+                draft.payload = {"invalidatedReason": "source_purged"}
+                draft.status = "invalidated"
+
+            # Historical snapshots can contain copied exact quotes. Scrub every
+            # revision before writing the deletion audit row.
+            changes = s.scalars(select(Change).where(Change.project_id == pid)).all()
+            for change in changes:
+                change.before_json = purge_source(change.before_json, sid)
+                change.after_json = purge_source(change.after_json, sid)
+
             s.execute(delete(Source).where(Source.id == sid))
-            append_change(s, p, before, after, expected, user, "source_delete")
-            return record(s, user, f"DELETE:{pid}:source:{sid}", key, payload, {"revision": p.revision})
+            safe_before = purge_source(before, sid)
+            append_change(s, p, safe_before, after, expected, user, "source_delete")
+            result = {
+                "revision": p.revision,
+                "deletionMode": "permanent_purge",
+                "purgedNodeCount": purged_nodes,
+                "invalidatedDraftCount": len(drafts),
+            }
+            return record(s, user, scope, key, payload, result)
 
     @app.get("/api/v1/projects/{pid}/history")
     def list_history(pid: str, authorization: str | None = Header(None)):

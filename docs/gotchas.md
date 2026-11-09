@@ -32,6 +32,10 @@
 | LLM candidate has no valid evidence, but still appears in the map | [GT-0024](#gt-0024--model-claims-with-invalid-or-out-of-scope-anchors-survived) |
 | Candidate generation takes tens of seconds with no visible explanation | [GT-0025](#gt-0025--synchronous-generation-looked-frozen) |
 | `502 LLM_OUTPUT_TRUNCATED` after retry, or malformed model JSON | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) and [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
+| Source deleted but quote remains in a map, draft or historical snapshot | [GT-0028](#gt-0028--source-delete-left-derived-evidence-in-live-records) |
+| PDF upload blocks API or consumes unbounded parser resources | [GT-0029](#gt-0029--pdf-extraction-ran-inside-the-api-process) |
+| Local API accepts forwarded headers or an external Host | [GT-0030](#gt-0030--dev-api-trusted-loopback-proxy-metadata) |
+| dev-stop reports failure after the service port is released but the PID is reused | [GT-0031](#gt-0031--dev-stop-mistook-pid-reuse-for-a-live-service) |
 | Markdown export hides node type / notes / verification | [GT-0023](#gt-0023--markdown-export-does-not-convey-node-type-notes-or-verification) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
 | HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
@@ -368,7 +372,8 @@ and passes 3/3 while `scripts/dev-start.sh` keeps running on 8000/5173.
 
 **Minimal reproduction:**
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+curl -s -o /dev/null -w '%{http_code}
+' -X POST \
   "http://127.0.0.1:8000/api/v1/projects/<pid>/nodes/ops" \
   -H 'Authorization: Bearer dev-<name>' -H 'Content-Type: application/json' \
   -H 'If-Match: "rev-999999999999999999999"' -H 'Idempotency-Key: bigrev-0001' \
@@ -934,7 +939,8 @@ No database internals were leaked.
 **Minimal reproduction:** start the API on a file database, hold an exclusive
 write lock, then:
 ```bash
-curl -s -o body.txt -w '%{http_code}\n' -X POST \
+curl -s -o body.txt -w '%{http_code}
+' -X POST \
   "http://127.0.0.1:8207/api/v1/projects/<pid>/nodes/ops" \
   -H 'Authorization: Bearer dev-<name>' -H 'Content-Type: application/json' \
   -H 'If-Match: "rev-0"' -H 'Idempotency-Key: lock-op-0001' \
@@ -1293,3 +1299,145 @@ provider-compatible retry ceiling; monitor actual usage and costs.
 **Limitation:** the provider's context/output ceiling still applies. If it
 rejects the larger budget, configure a supported ceiling or reduce the selected
 source scope. A token retry is bounded but can increase request cost.
+
+
+---
+
+## GT-0028 — Source delete left derived evidence in live records
+
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
+**Class:** Data lifecycle / privacy
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Phase 0 source deletion review; DELETE /api/v1/projects/{pid}/sources/{sid}.
+
+**Symptoms:** deleting Source and Paragraph rows removed the original text but left
+copied exactQuote values in Project.map_json, Draft.payload, and
+Change.before_json / Change.after_json. Markdown/JSON exports could continue
+to expose the quote, and old draft payloads could still be read.
+
+**Reproduction:** create a source containing a unique sentinel; cite it from a
+map node; generate a draft; create a map revision; delete the source; search
+the live project map, all Draft payloads, every Change snapshot and both export
+formats for the sentinel. Before the fix, the API returned success while the
+sentinel remained in derived rows.
+
+**Expected:** deletion is an irreversible logical purge. Remove nodes citing
+the source and their descendants from the current map and every historical map
+snapshot; invalidate and clear all project drafts; remove the Source/Paragraph
+rows; record a source-delete audit event whose snapshots are already scrubbed.
+The operation is atomic in one database transaction.
+
+**Fix:** purge_source() removes evidence-linked subtrees conservatively,
+reindexes remaining siblings, and preserves the structural root. The API
+scrubs every Change snapshot and replaces every Draft payload with a minimal
+invalidation marker before deleting the Source. A purged draft cannot be
+committed. The response identifies deletionMode=permanent_purge and reports
+purged node / invalidated draft counts.
+
+**Important limitation:** this is logical deletion from live SQLite rows and
+API-visible exports, not forensic secure erasure. SQLite WAL/free pages,
+filesystem snapshots and external backups may retain old bytes. Do not promise
+secure erasure until encrypted storage, key destruction and backup expiry are
+implemented. Manually authored text with no evidence reference cannot be
+reliably attributed to a source; source-linked claims and descendants are
+removed, but the system cannot infer arbitrary paraphrases without provenance.
+
+**Prevention:** preserve this end-to-end sentinel test. Any new cache, search
+index, job payload or derived table containing source text must be added to the
+same purge transaction or have an explicit retention contract.
+
+---
+
+## GT-0029 — PDF extraction ran inside the API process
+
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
+**Class:** Upload handling / availability
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** POST /api/v1/projects/{pid}/sources for PDF uploads.
+
+**Symptoms:** synchronous pypdf extraction ran inside the async API handler.
+A complex PDF could block the event loop; the 10 MB upload limit and 100-page
+limit did not bound CPU time or address-space consumption.
+
+**Expected:** parse outside the API process with a hard wall-clock timeout,
+CPU limit, address-space limit, page count and extracted-text cap. The API must
+remain responsive and terminate an over-time worker.
+
+**Fix:** tracemap.pdf_worker.parse_pdf_isolated() starts a fresh spawned child,
+applies POSIX RLIMIT_CPU and RLIMIT_AS, returns only extracted page text,
+and terminates/kills the child when the wall-clock deadline expires. Upload
+ownership, idempotency replay and source-count quota are checked before parser
+work; parsing is dispatched off the event loop.
+
+**Important limitation:** this is a separate process under the same OS user,
+not a container/UID/seccomp sandbox. It does not provide malware scanning or
+network/filesystem isolation. Public hostile uploads remain blocked until a
+dedicated unprivileged worker/container and storage policy exist.
+
+**Prevention:** keep the worker timeout/resource tests, retain file/page/text
+limits, and never move PdfReader extraction back into the API request process.
+
+---
+
+## GT-0030 — Dev API trusted loopback proxy metadata
+
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
+**Class:** Development security boundary
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** dev-only FastAPI middleware with fake Bearer dev-* identity.
+
+**Symptoms:** the middleware accepted any request whose TCP peer was loopback.
+A same-host reverse proxy could therefore forward a remote request to
+127.0.0.1; the old middleware did not reject forwarded headers or an external
+Host value.
+
+**Expected:** the local development API rejects common forwarding/client-IP
+headers and non-local Host values, in addition to requiring a loopback peer.
+It must never trust X-Forwarded-For as proof of the original client.
+
+**Fix:** middleware rejects Forwarded, X-Forwarded-*, X-Real-IP,
+CF-Connecting-IP, True-Client-IP, and related headers, checks the Host
+allowlist, and retains the loopback peer check.
+
+**Important limitation:** application middleware cannot distinguish a
+same-host reverse proxy that strips every forwarding header and rewrites Host
+to localhost. This remains a local-development-only service. Never put it
+behind Nginx/Caddy/another proxy, never expose the API/Vite ports, and never
+use Bearer dev-* as production authentication.
+
+**Prevention:** use the documented loopback-only launcher or an SSH tunnel.
+A real externally reachable deployment requires managed authentication,
+revocable sessions, trusted proxy configuration and a separate production
+security review.
+
+
+---
+
+## GT-0031 — dev-stop mistook PID reuse for a live service
+
+**Status:** RESOLVED — CI run [42607754977](https://github.com/1998x-stack/TraceMap/actions/runs/42607754977) passed
+**Class:** Local deployment lifecycle / reliability
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Linux dev-stop.sh during a rapid stop/restart cycle.
+
+**Symptoms:** after SIGTERM, the original API process exited and released its
+listener, but the OS reused its PID before the stop loop's final identity check.
+The script correctly refused to SIGKILL the new process, but incorrectly
+reported the original service stop as failed even though the service port was
+already free.
+
+**Expected:** never signal a PID whose start-time or command identity changed.
+If identity changes after SIGTERM and the expected service port is free, treat
+the original service as stopped, remove only the stale PID record and return
+success. If the port is still occupied or its state is unknown, fail closed.
+
+**Fix:** stop_service now checks the service port when PID identity changes.
+It removes the stale PID record only after observing the port free; otherwise
+it preserves the PID file and refuses SIGKILL.
+
+**Prevention:** retain both shell tests: identity changed + port free succeeds
+without SIGKILL; identity changed + port occupied remains a hard failure.

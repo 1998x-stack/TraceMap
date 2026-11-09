@@ -228,7 +228,15 @@ stop_service() {
   done
   if pid_alive "$pid"; then
     if ! pid_owned "$pid_file" "$pid" "$match"; then
-      warn "$name: PID changed identity while stopping; refusing SIGKILL"
+      # The original process may have exited and the OS reused its PID during
+      # the grace window. If the service port is already free, the old service
+      # is stopped: remove our stale PID record but never signal the new owner.
+      if [[ "$(port_state "$port")" == free ]]; then
+        warn "$name: PID identity changed after stop signal; listener released; refusing SIGKILL to reused PID"
+        rm -f "$pid_file"
+        return 0
+      fi
+      warn "$name: PID changed identity while stopping and listener remains; refusing SIGKILL"
       return 1
     fi
     warn "$name: PID $pid did not exit gracefully; sending SIGKILL"

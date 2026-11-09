@@ -104,7 +104,12 @@ run_restart_cycle() {
     -H "Authorization: Bearer dev-alice" 2>/dev/null | jq -r '.id // empty')"
   expect_eq "project persisted across restart" "$read_back" "$pid_"
 
-  "$SCRIPT_DIR/dev-stop.sh" >"$tmp/stop2.log" 2>&1 && ok "final stop" || bad "final dev-stop.sh"
+  if "$SCRIPT_DIR/dev-stop.sh" >"$tmp/stop2.log" 2>&1; then
+    ok "final stop"
+  else
+    bad "final dev-stop.sh (see $tmp/stop2.log)"
+    tail -n 30 "$tmp/stop2.log"
+  fi
 
   # restore the caller's environment so later sections use normal ports
   unset TRACEMAP_RUNTIME_DIR TRACEMAP_API_PORT TRACEMAP_WEB_PORT
