@@ -14,3 +14,5 @@ dist/
 coverage/
 .coverage
 .DS_Store
+apps/web/test-results/
+apps/web/playwright-report/

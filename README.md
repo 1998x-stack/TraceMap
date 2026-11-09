@@ -15,7 +15,7 @@
 - Whole-project revision and `If-Match` optimistic concurrency, scoped idempotency and undo of the latest map change.
 - Read-only generation drafts and Patch proposals (rule-based **demo**, not a model); explicit human commit; revision safety.
 - UTF-8 Markdown and JSON export; React Flow research canvas with source inspector and patch review.
-- API unit/integration tests and GitHub Actions for Python tests + frontend type/build checks.
+- API unit/integration tests and GitHub Actions for Python tests, frontend type/build checks, and a real Chromium end-to-end smoke test.
 
 ## Quick start (local only)
 
@@ -47,6 +47,8 @@ pytest -q
 cd ../web
 npm install
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
 ## Code categories

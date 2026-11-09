@@ -42,3 +42,30 @@ jobs:
       - name: Strict TS and production asset build
         run: npm run build
         working-directory: apps/web
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install backend
+        run: python -m pip install -e './apps/api[test]'
+      - name: Install browser client and Chromium
+        working-directory: apps/web
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: End-to-end source/evidence/patch smoke
+        working-directory: apps/web
+        run: npm run test:e2e
+      - name: Upload browser debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-debug
+          path: apps/web/test-results
+          if-no-files-found: ignore

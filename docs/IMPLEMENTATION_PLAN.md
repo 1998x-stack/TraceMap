@@ -15,9 +15,10 @@ Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work;
 
 1. `python -m pytest -q apps/api/tests`: every unit and integration test must pass.
 2. `npm run build` in `apps/web`: strict TypeScript + Vite bundle build must pass on CI.
-3. Confirm cross-user IDOR returns 404; forged anchor returns 422; stale writes return 409; mock draft/patch cannot change map without confirmation.
-4. Verify README links and all source files exist on GitHub; CI green on the final head commit.
-5. Future gates are **not marked complete** on the strength of scaffold code alone.
+3. `npm run test:e2e` in `apps/web`: Chromium must exercise the entire local happy path and produce a trace on failure.
+4. Confirm cross-user IDOR returns 404; forged anchor returns 422; stale writes return 409; mock draft/patch cannot change map without confirmation.
+5. Verify README links and all source files exist on GitHub; CI green on the final head commit.
+6. Future gates are **not marked complete** on the strength of scaffold code alone.
 
 ## Next engineering changes in priority order
 
