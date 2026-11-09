@@ -34,11 +34,47 @@ def test_build_tree_keeps_valid_refs_and_drops_hallucinated():
     assert len(refs) == 1
     assert refs[0]["anchorStatus"] == "anchored"
     assert refs[0]["exactQuote"] == "产品定价采用订阅制。"
-    assert dropped == 2  # the two unlocatable/cross-project anchors
+    assert dropped == 4  # malformed/cross-source/unanchored candidates are discarded
+    titles = [node["title"] for node in tree["nodes"]]
+    assert "幻觉引用" not in titles
+    assert "跨项目引用" not in titles
+    assert "无引用节点" not in titles
+    assert "类型被规范化" not in titles
+    assert "订阅制定价" in titles
     assert all(n["verification"] == "unverified" for n in tree["nodes"])
     # only model-proposed nodes are AI; the single root keeps origin "user"
     assert all(n["origin"] == "ai" for n in tree["nodes"] if n["parentId"] is not None)
-    assert any(n["type"] == "topic" for n in tree["nodes"])
+    assert any(n["type"] == "topic" for n in tree["nodes"])  # selected source group
+
+def test_build_tree_excludes_valid_anchor_from_unselected_source():
+    source, paragraphs, index = _fixture()
+    outsider = "unselected-source"
+    outsider_paragraph = split_paragraphs("这份资料没有被选择。", outsider)[0]
+    index[(outsider, outsider_paragraph["id"])] = outsider_paragraph["text"]
+    proposed = [
+        {"type": "claim", "title": "范围外的主张", "sourceId": outsider,
+         "paragraphId": outsider_paragraph["id"], "exactQuote": outsider_paragraph["text"]},
+        {"type": "claim", "title": "选中来源", "sourceId": source,
+         "paragraphId": paragraphs[0]["id"], "exactQuote": paragraphs[0]["text"]},
+    ]
+    tree, dropped = llm.build_tree("来源范围", proposed, index, {source: "访谈"})
+    assert dropped == 1
+    assert {n["title"] for n in tree["nodes"]}.isdisjoint({"范围外的主张"})
+    assert any(n["title"] == "选中来源" for n in tree["nodes"])
+    assert len([n for n in tree["nodes"] if n["evidenceRefs"]]) == 1
+
+def test_all_ungrounded_model_candidates_fail_closed(monkeypatch):
+    source, paragraphs, index = _fixture()
+    monkeypatch.setenv("TRACEMAP_LLM_API_KEY", "test-key")
+    documents = [{"sourceId": source, "title": "访谈", "paragraphs": [
+        {"id": p["id"], "text": p["text"]} for p in paragraphs]}]
+    canned = json.dumps({"nodes": [
+        {"title": "想象出来的结论", "sourceId": source,
+         "paragraphId": "none", "exactQuote": "invented"}]})
+    with pytest.raises(llm.LLMError) as exc:
+        llm.draft_from_llm("证据核验", documents, index, {source: "访谈"},
+                           chat=lambda *_: (canned, {}))
+    assert exc.value.code == "LLM_INVALID_OUTPUT"
 
 
 def test_draft_from_llm_injects_transport_and_labels(monkeypatch):

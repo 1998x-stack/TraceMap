@@ -9,6 +9,7 @@ import {
 } from './api';
 import {layout,sliceCodepoints} from './layout';
 import ResearchNodeCard, {type ResearchFlowNode} from './components/ResearchNode';
+import GenerationProgress, {type GenerationPhase} from './components/GenerationProgress';
 
 const api=new Api('dev-alice');
 const nodeTypes={research:ResearchNodeCard};
@@ -65,6 +66,8 @@ export default function App(){
   const [patch,setPatch]=useState<PatchProposal|null>(null);
   const [accepted,setAccepted]=useState<Set<string>>(new Set());
   const [busy,setBusy]=useState(false);
+  const [generation,setGeneration]=useState<null|{phase:GenerationPhase; mode:'llm'|'extractive'; sourceCount:number; startedAt:number}>(null);
+  const generationLock=useRef(false);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const [health,setHealth]=useState<Health|null>(null);
@@ -172,11 +175,32 @@ export default function App(){
     },'资料已解析并保存');
   };
   const generate=()=>{
-    if(!active||!tree)return;
-    void run(async()=>{
-      const job=await api.generate(active.id,tree.revision,active.goal||active.title,sources.map(x=>x.id));
-      setDraft(await api.getDraft(active.id,job.draftId));
-    },'已生成候选草稿，请审阅后决定是否应用');
+    if(!active||!tree||busy||generationLock.current||sources.length===0)return;
+    // Immediate ref lock prevents two requests before React commits busy=true.
+    generationLock.current=true;
+    const pid=active.id, revision=tree.revision;
+    setBusy(true);setError('');setNotice('');
+    setGeneration({phase:'waiting',mode:llmActive?'llm':'extractive',sourceCount:sources.length,startedAt:Date.now()});
+    void (async()=>{
+      try {
+        const job=await api.generate(pid,revision,active.goal||active.title,sources.map(x=>x.id));
+        setGeneration(previous=>previous?{...previous,phase:'reading'}:null);
+        const proposal=await api.getDraft(pid,job.draftId);
+        setDraft(proposal);
+        setNotice('候选草稿已生成；请核对证据后再决定是否替换正式地图。');
+      } catch(err) {
+        setError(getError(err));
+        if(err instanceof ApiError&&err.status===409){
+          const latest=await api.map(pid).catch(()=>null);
+          if(latest)setTree(latest);
+          setNotice('服务器版本已变化，生成未提交。请检查最新地图并重新审阅。');
+        }
+      } finally {
+        generationLock.current=false;
+        setGeneration(null);
+        setBusy(false);
+      }
+    })();
   };
 
   return <div className="workspace">
@@ -235,7 +259,7 @@ export default function App(){
       {!active||!tree ? <section className="welcome">
         <div className="welcome-glow" aria-hidden="true"><div className="glow-ring ring-one"/><div className="glow-ring ring-two"/><div className="glow-core">◎</div></div>
         <div className="welcome-content">
-          <div className="eyebrow"><span className="eyebrow-line"/> RESEARCH INTELLIGENCE · V0.2</div>
+          <div className="eyebrow"><span className="eyebrow-line"/> RESEARCH NOTEBOOK · SCHOLARLY EDITION</div>
           <h1>从信息，到结构。<br/><span>从观点，到证据。</span></h1>
           <p>将零散资料转化为可编辑、可溯源的思维导图。<br/>每一条证据有出处，每一次修改由你决定。</p>
           <div className="welcome-instruction"><span className="welcome-arrow">↖</span><span>从左侧创建一个研究项目，即可开始。</span></div>
@@ -273,6 +297,8 @@ export default function App(){
             <div className="map-actions"><span className="node-count">{tree.nodes.length} NODES</span>
               <button className="button button-primary" disabled={busy||sources.length===0} onClick={generate}>{llmActive?'◈ 生成候选导图（LLM）':'◈ 生成原文结构草稿'}</button></div>
           </div>
+          {generation&&<GenerationProgress phase={generation.phase} mode={generation.mode}
+            sourceCount={generation.sourceCount} startedAt={generation.startedAt}/>}
           <div className="map-metrics" aria-label="地图摘要">
             <div><span className="metric-pictogram">◇</span> <strong>{tree.nodes.length}</strong> 节点</div>
             <div><span className="metric-pictogram mint">◈</span> <strong>{anchoredCount}</strong> 有来源</div>

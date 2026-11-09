@@ -222,15 +222,23 @@ def build_tree(goal: str, proposed: list, paragraphs: dict, source_titles: dict)
         paragraph_id = item.get("paragraphId")
         quote = item.get("exactQuote")
         refs: list[dict] = []
-        if isinstance(source_id, str) and isinstance(paragraph_id, str) and isinstance(quote, str) and quote:
+        if (isinstance(source_id, str) and source_id in source_titles and
+                isinstance(paragraph_id, str) and isinstance(quote, str) and quote):
             paragraph = paragraphs.get((source_id, paragraph_id))
             offset = paragraph.find(quote) if isinstance(paragraph, str) else -1
             if paragraph is None or offset < 0 or len(quote) > MAX_QUOTE_CHARS:
-                dropped += 1  # hallucinated / cross-project / unlocatable evidence
+                pass  # missing/invalid evidence is rejected below
             else:
                 refs = [verify_ref({"sourceId": source_id, "paragraphId": paragraph_id,
                                     "start": offset, "end": offset + len(quote),
                                     "exactQuote": quote}, paragraphs)]
+
+        # An attractive but ungrounded claim is still unsafe in a research draft.
+        # Every model-proposed node must cite an exact quote from one of the
+        # explicitly selected sources, even when the model omitted an anchor.
+        if not refs:
+            dropped += 1
+            continue
 
         parent = root
         if isinstance(source_id, str) and source_id in source_titles:

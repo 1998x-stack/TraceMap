@@ -27,6 +27,8 @@
 | Test commands broke when run outside repository root | [GT-0017](#gt-0017--relative-commands-and-unscoped-tmp-cleanup) |
 | Safety tests fail only when `TRACEMAP_*` is exported in the shell | [GT-0018](#gt-0018--safety-tests-depended-on-ambient-tracemap-variables) |
 | `crypto.randomUUID is not a function` (LAN / plain-HTTP origin) | [GT-0021](#gt-0021--cryptorandomuuid-is-not-a-function-on-a-plain-http-lan-origin) |
+| LLM candidate has no valid evidence, but still appears in the map | [GT-0024](#gt-0024--model-claims-with-invalid-or-out-of-scope-anchors-survived) |
+| Candidate generation takes tens of seconds with no visible explanation | [GT-0025](#gt-0025--synchronous-generation-looked-frozen) |
 | `502 LLM_INVALID_OUTPUT` intermittently from `/generate` | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) |
 | Markdown export hides node type / notes / verification | [GT-0023](#gt-0023--markdown-export-does-not-convey-node-type-notes-or-verification) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
@@ -1115,3 +1117,79 @@ Changing headings risks polluting Xmind node text.
 export tests and keep existing heading substrings stable.
 
 **Links:** PR #6; `docs/LLM_PROVIDER.md`.
+
+---
+
+## GT-0024 — Model claims with invalid or out-of-scope anchors survived
+
+**Status:** FIX APPLIED — CI verification pending
+**Class:** Algorithm / Evidence integrity
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #7 `llm.py::build_tree` at `701cb335`.
+
+**Symptoms:** a model-produced claim with nonexistent `paragraphId`, empty
+`exactQuote` or an out-of-scope source can survive as a candidate node with
+`evidenceRefs: []`. A source within the same project but not supplied in
+`sourceIds` can also pass the full-project paragraph index check.
+
+**Minimal reproduction:** feed `build_tree` a valid first proposal, then
+a second claim with a forged paragraph or a `sourceId` not in `source_titles`.
+Inspect the candidate titles; before the fix, the unsupported claim remained.
+
+**Expected:** only model claims that cite a verbatim quote from an explicitly
+selected source should appear as candidate claims.
+**Actual (before):** bad anchors were dropped, but their claim nodes remained.
+**Root cause:** validation cleared refs without rejecting the node, and
+the evidence lookup was broader than the selected source scope.
+**Fix:** all model-proposed nodes must have an anchored, selected-source
+reference; count and skip malformed/out-of-scope candidates. If none survive,
+return `LLM_INVALID_OUTPUT` without mutating the saved map.
+**Files:** `apps/api/tracemap/llm.py`, `apps/api/tests/test_llm.py`.
+**Tests:** test_build_tree_keeps_valid_refs_and_drops_hallucinated,
+test_build_tree_excludes_valid_anchor_from_unselected_source,
+test_all_ungrounded_model_candidates_fail_closed.
+**Verification:** CI pending; no live LLM provider call is used in these
+deterministic tests.
+**Prevention:** fail closed on missing evidence; keep selected-source scopes
+in the model response validation layer.
+**Limitation:** an exact quote only proves textual presence, not that the
+candidate's assertion is logically entailed by the quote.
+
+## GT-0025 — Synchronous generation looked frozen
+
+**Status:** FIX APPLIED — CI verification pending
+**Class:** Frontend / Generation UX
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** PR #7 synchronous `/generate` endpoint; real model calls
+reported around 33 seconds, with default upstream timeout up to 180 seconds
+and a single retry for truncated output.
+
+**Symptoms:** the interface showed only generic `正在处理…`, while the
+candidate draft request was blocked awaiting a slow response.
+
+**Minimal reproduction:** use Playwright to delay the `/generate` response
+for >2 seconds; observe the prior map button/header without any elapsed time
+or granular request/wait/draft retrieval feedback.
+
+**Expected:** the user sees a truthful elapsed timer, waiting state and
+an explicit explanation that the model may take time.
+**Actual (before):** no generation-specific progress status.
+**Root cause:** a single global busy boolean masked synchronous network work.
+**Fix:** `GenerationProgress` component with explicit client-observed
+waiting/reading phases, elapsed time, indeterminate (non-percent) indicator,
+slow request explanation, duplicate-request lock and full cleanup on errors.
+**Files:** `apps/web/src/App.tsx`,
+`apps/web/src/components/GenerationProgress.tsx`,
+`apps/web/src/academic-theme.css`,
+`apps/web/e2e/generation-progress.spec.ts`.
+**Tests:** delayed success, upstream error, LLM-label and 390px layout
+Playwright cases.
+**Verification:** CI pending.
+**Prevention:** do not invent server-side completion percent. A future durable
+job must report real states through polling or authorized events.
+**Limitation:** the current client has no precise backend progress, cancellation
+or cross-reload recovery; those require a queued job architecture.
+
+See `docs/UI_ACADEMIC_GENERATION_V0.4.md` for design and behavior contracts.
