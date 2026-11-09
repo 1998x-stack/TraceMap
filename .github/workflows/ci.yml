@@ -20,6 +20,8 @@ jobs:
         run: python -m compileall -q apps/api/tracemap && python -m pytest -q apps/api/tests
       - name: Shell script syntax check
         run: for f in scripts/*.sh; do bash -n "$f"; done && echo "scripts OK"
+      - name: Development deployment safety regression tests
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Generated OpenAPI contract has no drift
         run: python scripts/export_openapi.py --check
       - name: Synthetic evidence retrieval benchmark (informational timing)
@@ -81,4 +83,46 @@ jobs:
         with:
           name: playwright-debug
           path: apps/web/test-results
+          if-no-files-found: ignore
+
+  deployment-lifecycle:
+    runs-on: ubuntu-latest
+    env:
+      TRACEMAP_RUNTIME_DIR: ${{ runner.temp }}/tracemap-deployment-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated API venv and dependencies
+        run: |
+          python -m venv apps/api/.venv
+          apps/api/.venv/bin/python -m pip install -e './apps/api[test]'
+      - name: Install frontend lockfile dependencies
+        working-directory: apps/web
+        run: npm ci --no-audit --no-fund
+      - name: Start and inspect loopback-only development services
+        run: |
+          scripts/dev-start.sh
+          scripts/dev-status.sh
+      - name: Smoke test and isolated restart/persistence cycle
+        run: |
+          scripts/smoke-test.sh
+          scripts/smoke-test.sh --restart
+      - name: Stop and verify service lifecycle
+        run: |
+          scripts/dev-stop.sh
+          scripts/dev-stop.sh
+      - name: Always attempt safe cleanup
+        if: always()
+        run: scripts/dev-stop.sh || true
+      - name: Upload synthetic deployment logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracemap-linux-lifecycle-debug
+          path: ${{ runner.temp }}/tracemap-deployment-ci/logs
           if-no-files-found: ignore

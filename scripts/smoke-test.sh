@@ -19,6 +19,32 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/dev-common.sh"
 set +e   # dev-common.sh enables errexit; this harness needs to keep going
+validate_dev_configuration
+
+# Cleanup even on failed assertions, SIGTERM, or a failed startup.
+WORKFLOW_TMP=""
+WORKFLOW_PID=""
+RESTART_TMP=""
+cleanup_smoke() {
+  if [[ -n "$WORKFLOW_PID" ]] && pid_alive "$WORKFLOW_PID"; then
+    kill "$WORKFLOW_PID" 2>/dev/null || true
+    wait "$WORKFLOW_PID" 2>/dev/null || true
+  fi
+  [[ -n "$WORKFLOW_TMP" && -d "$WORKFLOW_TMP" ]] && rm -rf -- "$WORKFLOW_TMP"
+  if [[ -n "$RESTART_TMP" && -d "$RESTART_TMP" ]]; then
+    TRACEMAP_RUNTIME_DIR="$RESTART_TMP/run" \
+      TRACEMAP_API_PORT="${RESTART_API_PORT:-8030}" \
+      TRACEMAP_WEB_PORT="${RESTART_WEB_PORT:-5183}" \
+      env -u TRACEMAP_DATABASE_URL "$SCRIPT_DIR/dev-stop.sh" >/dev/null 2>&1 || true
+    rm -rf -- "$RESTART_TMP"
+  fi
+}
+trap cleanup_smoke EXIT
+
+pick_port() {
+  "$API_PY" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
 
 PASS=0; FAIL=0; SKIP=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
@@ -37,9 +63,15 @@ run_restart_cycle() {
   section "start / stop / restart / persistence cycle (isolated runtime)"
   local tmp runtime pids ports
   tmp="$(mktemp -d /tmp/tracemap-restart.XXXXXX)"
+  RESTART_TMP="$tmp"
   export TRACEMAP_RUNTIME_DIR="$tmp/run"
-  export TRACEMAP_API_PORT=8030
-  export TRACEMAP_WEB_PORT=5183
+  # Never allow an inherited URL to point a restart test at user data.
+  unset TRACEMAP_DATABASE_URL
+  RESTART_API_PORT="$(pick_port)"
+  RESTART_WEB_PORT="$(pick_port)"
+  while [[ "$RESTART_API_PORT" == "$RESTART_WEB_PORT" ]]; do RESTART_WEB_PORT="$(pick_port)"; done
+  export TRACEMAP_API_PORT="$RESTART_API_PORT"
+  export TRACEMAP_WEB_PORT="$RESTART_WEB_PORT"
   # re-source so derived paths pick up the overrides
   source "$SCRIPT_DIR/dev-common.sh"
   set +e
@@ -75,7 +107,8 @@ run_restart_cycle() {
   unset TRACEMAP_RUNTIME_DIR TRACEMAP_API_PORT TRACEMAP_WEB_PORT
   source "$SCRIPT_DIR/dev-common.sh"
   set +e
-  rm -rf "$tmp"
+  rm -rf -- "$tmp"
+  RESTART_TMP=""
 }
 
 # ---------------------------------------------------------------------------
@@ -85,8 +118,8 @@ run_live_checks() {
   section "live dev stack: loopback binding and reachability"
   local pid state
   pid="$(read_pid "$API_PID_FILE")"; state="$(port_state "$API_PORT" "$pid")"
-  if [[ "$state" == free ]]; then
-    skip "api not running on $API_PORT (start it with scripts/dev-start.sh)"
+  if [[ "$state" != self ]] || ! pid_owned "$API_PID_FILE" "$pid" "tracemap.main:app"; then
+    bad "api not owned on port $API_PORT (state=$state; run scripts/dev-start.sh)"
   else
     # Reject 0.0.0.0 exposure: only a 127.0.0.1 listener is acceptable.
     local bind; bind="$(ss -H -tlnp "sport = :$API_PORT" 2>/dev/null | awk '{print $4}')"
@@ -98,8 +131,8 @@ run_live_checks() {
   fi
 
   pid="$(read_pid "$WEB_PID_FILE")"; state="$(port_state "$WEB_PORT" "$pid")"
-  if [[ "$state" == free ]]; then
-    skip "web not running on $WEB_PORT"
+  if [[ "$state" != self ]] || ! pid_owned "$WEB_PID_FILE" "$pid" "vite"; then
+    bad "web not owned on port $WEB_PORT (state=$state; run scripts/dev-start.sh)"
   else
     local bind; bind="$(ss -H -tlnp "sport = :$WEB_PORT" 2>/dev/null | awk '{print $4}')"
     if [[ "$bind" == 127.0.0.1:* ]]; then ok "vite listening on loopback only ($bind)"; else bad "vite bound to non-loopback address: '$bind'"; fi
@@ -117,10 +150,14 @@ run_workflow() {
   section "full API workflow on throwaway SQLite (isolated)"
   local tmp port pid base
   tmp="$(mktemp -d /tmp/tracemap-smoke.XXXXXX)"
-  port=8021; base="http://127.0.0.1:$port"
+  WORKFLOW_TMP="$tmp"
+  port="$(pick_port)"
+  [[ "$(port_state "$port")" == free ]] || { bad "throwaway port $port unexpectedly occupied"; return; }
+  base="http://127.0.0.1:$port"
   TRACEMAP_ENV=development TRACEMAP_DATABASE_URL="sqlite:///$tmp/smoke.db" \
     "$API_PY" -m uvicorn tracemap.main:app --host 127.0.0.1 --port "$port" >>"$tmp/api.log" 2>&1 &
   pid=$!
+  WORKFLOW_PID="$pid"
   if ! wait_for_http "$base/health" "$pid" 30; then
     bad "throwaway api failed to start"; tail -n 20 "$tmp/api.log"; kill "$pid" 2>/dev/null; rm -rf "$tmp"; return
   fi
@@ -226,21 +263,23 @@ run_workflow() {
   local i; for ((i=0;i<50;i++)); do pid_alive "$pid" || break; sleep 0.1; done
   pid_alive "$pid" && kill -9 "$pid" 2>/dev/null || true
   [[ -z "$(port_listener_pid "$port")" ]] && ok "throwaway api port $port released" || bad "throwaway api port still held"
-  rm -rf "$tmp"
+  rm -rf -- "$tmp"
+  WORKFLOW_TMP=""
+  WORKFLOW_PID=""
 }
 
 # ---------------------------------------------------------------------------
 main() {
   echo "TraceMap smoke tests  ($(TS))"
-  if [[ "${1:-}" == "--restart" ]]; then
-    run_restart_cycle
-  else
-    run_live_checks
-    run_workflow
-  fi
+  case "${1:-}" in
+    --restart) run_restart_cycle ;;
+    --live-only) run_live_checks ;;
+    "") run_live_checks; run_workflow ;;
+    *) echo "Usage: scripts/smoke-test.sh [--restart|--live-only]" >&2; return 2 ;;
+  esac
   echo
   printf 'summary: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
-  [[ "$FAIL" -eq 0 ]]
+  [[ "$FAIL" -eq 0 && "$SKIP" -eq 0 ]]
 }
 
 main "$@"

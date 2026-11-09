@@ -17,6 +17,7 @@
 #     expected component, so they cannot terminate an unrelated process.
 
 set -euo pipefail
+umask 077  # Keep new runtime files (SQLite, logs, PID records) private.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -50,31 +51,88 @@ info() { printf '%s [tracemap] %s\n' "$(TS)" "$*"; }
 warn() { printf '%s [tracemap] WARN %s\n' "$(TS)" "$*" >&2; }
 fail() { printf '%s [tracemap] ERROR %s\n' "$(TS)" "$*" >&2; exit 1; }
 
-ensure_dirs() { mkdir -p "$PID_DIR" "$LOG_DIR" "$DATA_DIR"; }
+ensure_dirs() { mkdir -p -- "$PID_DIR" "$LOG_DIR" "$DATA_DIR"; }
 
-pid_alive() { [[ -n "${1:-}" ]] && kill -0 "$1" 2>/dev/null; }
+# Fail closed: no host override may make the insecure development stack public.
+validate_dev_configuration() {
+  [[ "$API_HOST" == 127.0.0.1 && "$WEB_HOST" == 127.0.0.1 ]] ||
+    fail "DEV_BIND_UNSAFE: API and web must both bind 127.0.0.1 (not 0.0.0.0 or ::)"
+  local port n
+  for port in "$API_PORT" "$WEB_PORT"; do
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] || fail "Invalid port: $port"
+    n=$((10#$port))
+    (( n >= 1 && n <= 65535 )) || fail "Port out of range: $port"
+  done
+  (( 10#$API_PORT != 10#$WEB_PORT )) || fail "API and web ports must differ"
+  [[ "$RUNTIME_DIR" == /* && "$RUNTIME_DIR" != *$'\n'* ]] ||
+    fail "Runtime directory must be an absolute, single-line path"
+  [[ "$API_DB_URL" == sqlite:////* && "$API_DB_URL" != *$'\n'* ]] ||
+    fail "Database URL must be an absolute SQLite URL (sqlite:////path/to/file.db)"
+}
+
+pid_start_ticks() {
+  local pid="$1"
+  [[ -r "/proc/$pid/stat" ]] || return 1
+  # Fields 1+2 contain PID and a parenthesized process name. Strip them before
+  # reading the 20th remaining field (Linux proc stat field 22, starttime).
+  local stat
+  IFS= read -r stat < "/proc/$pid/stat" || return 1
+  stat="${stat##*) }"
+  local -a fields
+  read -r -a fields <<< "$stat"
+  [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "${fields[19]}"
+}
+
+pid_owned() {
+  local pid_file="$1" pid="$2" signature="$3" saved_pid saved_ticks actual
+  [[ -f "$pid_file" ]] || return 1
+  read -r saved_pid saved_ticks < "$pid_file" || return 1
+  [[ "$saved_pid" == "$pid" && "$saved_ticks" =~ ^[0-9]+$ ]] || return 1
+  pid_alive "$pid" || return 1
+  actual="$(pid_start_ticks "$pid")" || return 1
+  [[ "$actual" == "$saved_ticks" ]] || return 1
+  [[ "$(cmdline_of "$pid")" == *"$signature"* ]]
+}
+
+
+pid_alive() {
+  [[ -n "${1:-}" ]] && kill -0 "$1" 2>/dev/null || return 1
+  # Reaped-or-unreaped zombies are not running services.
+  [[ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]]
+}
 
 read_pid() {
-  local file="$1"
+  local file="$1" pid start
   [[ -f "$file" ]] || return 0
-  tr -dc '0-9' < "$file" 2>/dev/null || true
+  read -r pid start < "$file" || return 0
+  [[ "$pid" =~ ^[0-9]+$ ]] && printf '%s' "$pid" || true
 }
 
 cmdline_of() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true; }
 
-# PID currently LISTENing on a TCP port (empty if none).
+# A listener with an inaccessible PID is occupied, not free.
 port_listener_pid() {
   local port="$1"
-  ss -H -tlnp "sport = :$port" 2>/dev/null \
-    | grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2 || true
+  ss -H -tlnp "sport = :$port" 2>/dev/null |
+    grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2 || true
 }
 
-# "free" | "self" | "other" for a port given the PID we recorded for it.
+# "free" | "self" | "other" | "unknown"
 port_state() {
-  local port="$1" expected_pid="${2:-}" actual
-  actual="$(port_listener_pid "$port")"
-  if [[ -z "$actual" ]]; then echo free; return; fi
-  if [[ -n "$expected_pid" && "$actual" == "$expected_pid" ]]; then echo self; else echo other; fi
+  local port="$1" expected_pid="${2:-}" lines actual
+  command -v ss >/dev/null 2>&1 || { echo unknown; return; }
+  lines="$(ss -H -tlnp "sport = :$port" 2>/dev/null)" || { echo unknown; return; }
+  [[ -n "$lines" ]] || { echo free; return; }
+  actual="$(printf '%s\n' "$lines" | grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2 || true)"
+  # All listeners for this port must be loopback; 'ss' may hide process owners.
+  if [[ -n "$expected_pid" && "$actual" == "$expected_pid" ]] &&
+    ! printf '%s\n' "$lines" | awk '{print $4}' |
+      grep -Ev "^127\\.0\\.0\\.1:$port\$" >/dev/null; then
+    echo self
+  else
+    echo other
+  fi
 }
 
 # wait_for_http URL PID TIMEOUT_SECONDS -> 0 ok, 1 timeout, 2 process died
@@ -95,9 +153,11 @@ start_service() {
   {
     printf '\n===== %s | start %s | port %s =====\n' "$(TS)" "$name" "$port"
   } >> "$log_file"
-  nohup "$@" >> "$log_file" 2>&1 &
-  local pid=$!
-  echo "$pid" > "$pid_file"
+  # fd 9 is the lifecycle lock; do not let the daemon inherit it.
+  nohup "$@" 9>&- >> "$log_file" 2>&1 &
+  local pid=$! ticks
+  ticks="$(pid_start_ticks "$pid")" || fail "$name: unable to record PID generation"
+  printf '%s %s\n' "$pid" "$ticks" > "$pid_file"
   echo "$pid"
 }
 
@@ -109,20 +169,23 @@ stop_service() {
   pid="$(read_pid "$pid_file")"
 
   if [[ -z "$pid" ]]; then
-    local other; other="$(port_listener_pid "$port")"
-    [[ -n "$other" ]] && warn "$name: no PID file but port $port held by PID $other ($(cmdline_of "$other"))"
+    if [[ "$(port_state "$port")" != free ]]; then
+      warn "$name: port $port is occupied without an owned PID record; refusing"
+      return 1
+    fi
     return 0
   fi
   if ! pid_alive "$pid"; then
     warn "$name: stale PID file (PID $pid not running); removing"
     rm -f "$pid_file"
+    [[ "$(port_state "$port")" == free ]]
+    return
+  fi
+  if ! pid_owned "$pid_file" "$pid" "$match"; then
+    warn "$name: refusing to signal PID $pid: starttime or command signature mismatches PID record"
     return 1
   fi
   cmd="$(cmdline_of "$pid")"
-  if [[ "$cmd" != *"$match"* ]]; then
-    warn "$name: refusing to stop PID $pid — command line does not contain '$match': $cmd"
-    return 1
-  fi
 
   info "$name: stopping PID $pid"
   kill "$pid" 2>/dev/null || true
@@ -131,15 +194,18 @@ stop_service() {
     sleep 0.1
   done
   if pid_alive "$pid"; then
+    if ! pid_owned "$pid_file" "$pid" "$match"; then
+      warn "$name: PID changed identity while stopping; refusing SIGKILL"
+      return 1
+    fi
     warn "$name: PID $pid did not exit gracefully; sending SIGKILL"
     kill -9 "$pid" 2>/dev/null || true
     sleep 0.3
   fi
   rm -f "$pid_file"
 
-  local other; other="$(port_listener_pid "$port")"
-  if [[ -n "$other" ]]; then
-    warn "$name: port $port still held by PID $other ($(cmdline_of "$other"))"
+  if [[ "$(port_state "$port")" != free ]]; then
+    warn "$name: port $port remains occupied (or listener state is unknown)"
     return 1
   fi
   info "$name: stopped, port $port released"

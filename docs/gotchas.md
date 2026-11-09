@@ -19,6 +19,12 @@
 | `StarletteDeprecationWarning: ... install httpx2 instead` | [GT-0008](#gt-0008--deprecated-starlette-testclient--httpx-pairing) |
 | `/docs` renders blank with no internet | [GT-0009](#gt-0009--swagger-ui-at-docs-loads-assets-from-a-cdn) |
 | Untracked `tsconfig.tsbuildinfo` after a build | [GT-0010](#gt-0010--tsc--b-leaves-an-untracked-tsbuildinfo) |
+| Public bind override in dev-start | [GT-0012](#gt-0012--host-override-could-expose-development-services) |
+| Wrong PID killed / opaque port treated as free | [GT-0013](#gt-0013--pid-reuse-and-opaque-listener-ownership) |
+| Smoke script returned success when server absent | [GT-0014](#gt-0014--live-smoke-skipped-absent-services) |
+| Playwright reused unknown test servers or database override | [GT-0015](#gt-0015--e2e-server-reuse-and-database-override) |
+| Restart smoke could inherit user database | [GT-0016](#gt-0016--restart-test-inherited-database-url) |
+| Test commands broke when run outside repository root | [GT-0017](#gt-0017--relative-commands-and-unscoped-tmp-cleanup) |
 | Test suite is slow (~40 s) | [GT-0011](#gt-0011--sqlite-ddlfsync-is-slow-on-this-host) |
 
 ## 2. Current environment and verified commits
@@ -76,6 +82,22 @@ Verified commits:
 | GT-0008 | Deprecated Starlette `TestClient` + `httpx` pairing | Test | P3 | Would require `httpx2` or a version pin; not blocking now |
 | GT-0009 | Swagger UI assets load from a CDN | Frontend/Docs | P3 | Cosmetic; affects offline `/docs` only |
 | GT-0011 | SQLite DDL/fsync is slow on this host | Environment | P3 | Host disk characteristic; not application code |
+
+## 5.1 Deployment review follow-up (PR #6)
+
+The following faults were identified by a **source-level safety review** of PR #6,
+not by inspecting private server logs. Fixes are proposed in this same branch;
+the GitHub `deployment-lifecycle` job is the independent verification gate.
+Until it passes, treat each status as **FIX APPLIED / CI PENDING**, not RESOLVED.
+
+| ID | Severity | Symptom / root issue |
+| --- | --- | --- |
+| GT-0012 | P0 | Unsafe host overrides can bind development Vite/API to public interfaces |
+| GT-0013 | P1 | PID reuse and `ss` hiding an owner's PID make stop/start ownership unreliable |
+| GT-0014 | P1 | Missing live development services were SKIP, yet smoke exited successfully |
+| GT-0015 | P1 | E2E reused local listeners and trusted an arbitrary DB URL override |
+| GT-0016 | P1 | Restart smoke inherited TRACEMAP_DATABASE_URL despite isolated runtime |
+| GT-0017 | P2 | Agent commands used the wrong working directory; wildcard cleanup was too broad |
 
 ## 6. Recommended troubleshooting order
 
@@ -605,3 +627,172 @@ fidelity.
 *Last updated: 2026-11-09. When you resolve an entry, keep it — update the status,
 add the fix, files, tests and the verifying commit SHA. Never delete a resolved
 entry and never remove the failing test that guarded it.*
+
+---
+
+## GT-0012 — Host override could expose development services
+
+**Status:** FIX APPLIED / CI PENDING
+**Class:** Security / Deployment
+**Severity:** P0
+**First seen:** 2026-11-09
+**Environment:** PR #6 at dcc1a13, Linux, shell scripts.
+
+**Symptoms:** `TRACEMAP_WEB_HOST=0.0.0.0 scripts/dev-start.sh` could
+launch Vite on all interfaces. The development API accepted similar host
+overrides. Fake bearer tokens do not protect public endpoints.
+
+**Minimal reproduction (safe, without starting services):**
+`TRACEMAP_WEB_HOST=0.0.0.0 bash scripts/dev-start.sh`
+must exit nonzero with `DEV_BIND_UNSAFE` before a service is started.
+
+**Expected:** only 127.0.0.1 is allowed.
+**Actual (before):** override values were passed directly to Uvicorn/Vite.
+**Root cause:** dev-common exposed host variables without validation.
+**Fix:** validate both literal hosts, ports, runtime and SQLite URL before
+touching runtime files. Vite also rejects non-loopback proxy targets.
+**Files:** scripts/dev-common.sh, scripts/dev-start.sh, apps/web/vite.config.ts.
+**Related tests:** scripts/tests/test_dev_safety.py (host and port matrix);
+GitHub deployment-lifecycle CI.
+**Verification:** pending branch CI. Do not mark verified without run URL.
+**Prevention:** fail-closed default and regression assertions.
+**Links:** PR #6.
+
+## GT-0013 — PID reuse and opaque listener ownership
+
+**Status:** FIX APPLIED / CI PENDING
+**Class:** Deployment / Process management
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #6 original scripts.
+
+**Symptoms:** `ss -p` can hide another user's PID while still showing the
+listener, incorrectly reporting a port as free. An old PID file that names a
+reused process with a matching word could be signalled.
+
+**Minimal reproduction:** mock `ss` output containing LISTEN but no
+`pid=...`; `port_state` must return `other` rather than `free`. Record
+a PID/starttime pair, alter the starttime, and verify `pid_owned` rejects it.
+
+**Expected:** never reuse or kill a process without verified ownership.
+**Actual (before):** listener was inferred solely from parseable PID; stop
+trusted a command substring.
+**Root cause:** PID-only file and process-name check; hidden listener metadata.
+**Fix:** PID + `/proc/PID/stat` starttime, strict loopback listener checks,
+serialized lifecycle via flock, and refusal when ownership is uncertain.
+Old PID files without a starttime deliberately fail closed: review and stop
+legacy services manually before upgrading.
+**Files:** scripts/dev-common.sh, scripts/dev-start.sh, scripts/dev-stop.sh,
+scripts/dev-status.sh.
+**Related tests:** scripts/tests/test_dev_safety.py.
+**Verification:** pending branch CI.
+**Prevention:** preserve process-generation checks and never assume PID-less
+`ss` output means a free port.
+**Links:** PR #6.
+
+## GT-0014 — Live smoke skipped absent services
+
+**Status:** FIX APPLIED / CI PENDING
+**Class:** Test / Deployment
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #6 original smoke-test.sh.
+
+**Symptoms:** when API and Vite were not running, `scripts/smoke-test.sh`
+could print SKIP for both and still exit successfully because the throwaway
+workflow passed.
+
+**Minimal reproduction:** with no TraceMap listeners, run
+`scripts/smoke-test.sh --live-only`; it must return nonzero and report API
+and web as missing.
+**Expected:** a deployment health check requires a running, owned service.
+**Actual (before):** missing services did not increment FAIL.
+**Root cause:** SKIP was treated as acceptable for required live checks.
+**Fix:** live checks fail when state/identity differs from the owned
+loopback instance; a standalone `--live-only` regression path is supported.
+**Files:** scripts/smoke-test.sh.
+**Related tests:** scripts/tests/test_dev_safety.py and CI lifecycle job.
+**Verification:** pending branch CI.
+**Prevention:** exit nonzero for FAIL or required SKIP.
+**Links:** PR #6.
+
+## GT-0015 — E2E server reuse and database override
+
+**Status:** FIX APPLIED / CI PENDING
+**Class:** Test / Data isolation
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Playwright on Linux.
+
+**Symptoms:** the original dedicated E2E ports still used
+`reuseExistingServer: !process.env.CI`, so a local port collision could
+silently use another developer's listener. `TRACEMAP_E2E_DATABASE_URL` could
+override the disposable DB with a persistent one.
+
+**Minimal reproduction:** inspect `apps/web/playwright.config.ts`; test that
+`TRACEMAP_E2E_DATABASE_URL=sqlite:////tmp/shared.db` is rejected rather than
+used, and a pre-existing E2E listener makes the run fail.
+**Expected:** tests never reuse live services or writable user DB files.
+**Actual (before):** reuse enabled outside CI and override trusted.
+**Root cause:** incomplete isolation on local runner.
+**Fix:** reuse always false; mkdtemp unique private DB; reject DB overrides;
+validate distinct test ports; clean owned temp directory when runner exits.
+**Files:** apps/web/playwright.config.ts.
+**Related tests:** browser-e2e CI, test harness startup.
+**Verification:** pending branch CI.
+**Prevention:** never relax the isolation guards to make a failing test pass.
+**Links:** PR #6.
+
+## GT-0016 — Restart test inherited database URL
+
+**Status:** FIX APPLIED / CI PENDING
+**Class:** Database / Test
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** PR #6 original restart smoke.
+
+**Symptoms:** `scripts/smoke-test.sh --restart` changed
+`TRACEMAP_RUNTIME_DIR`, but if the shell exported
+`TRACEMAP_DATABASE_URL`, the lifecycle scripts still preferred that URL.
+
+**Minimal reproduction:** configure a test sentinel SQLite outside a temporary
+runtime, export its URL, invoke restart test. It must not change the sentinel.
+**Expected:** every restart test uses only a new disposable database.
+**Actual (before):** inherited DB override remained active.
+**Root cause:** API_DB_URL gives precedence to TRACEMAP_DATABASE_URL.
+**Fix:** explicitly unset inherited DB URL, allocate dynamic free loopback
+ports, and use exit traps for cleanup.
+**Files:** scripts/smoke-test.sh.
+**Related tests:** CI deployment-lifecycle restart and persistence cycle.
+**Verification:** pending branch CI; the sentinel test remains a suggested
+future addition if not present in CI.
+**Prevention:** never run destructive tests with unreviewed env overrides.
+**Links:** PR #6.
+
+## GT-0017 — Relative commands and unscoped /tmp cleanup
+
+**Status:** FIX APPLIED / CI PENDING
+**Class:** Documentation / Agent reliability
+**Severity:** P2
+**First seen:** 2026-11-09
+**Environment:** new-agent cold start.
+
+**Symptoms:** `AGENTS.md` and the Linux deployment guide ran
+`cd apps/web` followed by `scripts/smoke-test.sh`, which is not in the
+working directory. Wildcard `rm` commands could remove concurrent test
+files under /tmp.
+
+**Minimal reproduction:** follow the old quick-reference command block from
+the repo root; smoke script path cannot be resolved after `cd apps/web`.
+**Expected:** copy-paste from repo root works and cleanup is owned.
+**Actual (before):** path dependent and overly broad.
+**Root cause:** command examples did not restore CWD; cleanup not scoped to
+one test invocation.
+**Fix:** restore repo root before running scripts, remove wildcard cleanup,
+and link to unique temp-directory ownership.
+**Files:** AGENTS.md, docs/DEPLOYMENT_LINUX.md.
+**Related tests:** independent cold-start walkthrough required for final
+server acceptance.
+**Verification:** pending cold-start validation.
+**Prevention:** run documentation blocks as scripts in CI when practical.
+**Links:** PR #6.

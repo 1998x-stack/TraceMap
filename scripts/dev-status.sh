@@ -6,6 +6,7 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/dev-common.sh"
 
+validate_dev_configuration
 echo "TraceMap dev status  ($(TS))"
 echo "  repo      : $REPO_ROOT"
 echo "  runtime   : $RUNTIME_DIR"
@@ -19,7 +20,10 @@ component() {
   printf '\n[%s] port %s:%s  listener=%s  ' "$name" "$host" "$port" "$state"
   if [[ -n "$pid" ]] && pid_alive "$pid"; then
     cmd="$(cmdline_of "$pid")"
-    printf 'PID=%s alive\n      cmd: %s\n' "$pid" "${cmd:0:160}"
+    local signature owned
+    signature="vite"; [[ "$name" == api ]] && signature="tracemap.main:app"
+    owned="UNVERIFIED"; pid_owned "$pid_file" "$pid" "$signature" && owned="owned"
+    printf 'PID=%s alive (%s)\n      cmd: %s\n' "$pid" "$owned" "${cmd:0:160}"
   else
     printf 'PID=%s (not running)\n' "${pid:-none}"
   fi

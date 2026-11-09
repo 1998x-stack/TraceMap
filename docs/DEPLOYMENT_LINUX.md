@@ -173,6 +173,7 @@ python scripts/benchmark_domain.py           # synthetic lexical microbenchmark
 cd apps/web
 npm run build                                # strict TS + Vite bundle
 npm run test:e2e                             # Playwright starts its OWN api+vite
+cd ../..                                     # required for scripts/ paths
 
 # deployment smoke tests (see §8 for isolated writes)
 scripts/smoke-test.sh                        # live checks + throwaway-db workflow

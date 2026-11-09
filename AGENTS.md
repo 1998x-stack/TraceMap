@@ -51,6 +51,7 @@ python -m pytest -q apps/api/tests          # must be fully green
 python scripts/export_openapi.py --check    # route-signature contract
 python scripts/benchmark_domain.py          # synthetic, informational timing
 cd apps/web && npm run build && npm run test:e2e
+cd ../..                                    # return to repo root
 scripts/smoke-test.sh && scripts/smoke-test.sh --restart
 ```
 
@@ -73,6 +74,8 @@ Prevention, Links). Keep resolved entries forever; mark unverified guesses
   anything under `$TRACEMAP_RUNTIME_DIR`.
 - `git push --force`, rewriting history, or committing to `main` directly.
 - Disabling the production guard, the loopback middleware, or any test/assert.
+- Setting TRACEMAP_API_HOST / TRACEMAP_WEB_HOST to any non-loopback host,
+  reusing E2E databases, or treating skipped health checks as passed.
 - Installing a **system-wide** service. (A reviewable *user*-unit template
   exists in [`scripts/systemd/`](scripts/systemd/README.md); never install it
   without approval.)

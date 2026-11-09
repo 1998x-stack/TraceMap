@@ -7,6 +7,10 @@ import react from '@vitejs/plugin-react';
 declare const process: { env: Record<string, string | undefined> };
 
 const proxyTarget = process.env.TRACEMAP_PROXY_TARGET || 'http://127.0.0.1:8000';
+const parsedProxy = /^http:\/\/127\.0\.0\.1:(\d{1,5})$/.exec(proxyTarget);
+if (!parsedProxy || Number(parsedProxy[1]) < 1 || Number(parsedProxy[1]) > 65535) {
+  throw new Error('DEV_PROXY_UNSAFE: Vite proxy target must be http://127.0.0.1:<port>');
+}
 
 export default defineConfig({
   plugins: [react()],

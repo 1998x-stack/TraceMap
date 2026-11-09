@@ -8,7 +8,12 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/dev-common.sh"
 
+validate_dev_configuration
+command -v ss >/dev/null || fail "ss (iproute2) is required to check listeners safely"
+command -v flock >/dev/null || fail "flock is required for race-safe service lifecycle commands"
 ensure_dirs
+exec 9> "$PID_DIR/.lifecycle.lock"
+flock -n 9 || fail "Another TraceMap lifecycle command is running"
 
 # ---- prerequisites ---------------------------------------------------------
 [[ -x "$API_PY" ]] || fail "backend venv missing at $API_PY
@@ -23,16 +28,23 @@ info "sqlite      : $API_DB_URL"
 
 # ---- API -------------------------------------------------------------------
 api_pid="$(read_pid "$API_PID_FILE")"
+if [[ -n "$api_pid" ]] && pid_alive "$api_pid" &&
+   ! pid_owned "$API_PID_FILE" "$api_pid" "tracemap.main:app"; then
+  fail "api: recorded PID is alive but does not match the owned process identity"
+fi
 case "$(port_state "$API_PORT" "$api_pid")" in
   self)
+    pid_owned "$API_PID_FILE" "$api_pid" "tracemap.main:app" ||
+      fail "api: listener does not match owned process identity"
     info "api: already running (PID $api_pid on $API_HOST:$API_PORT) — not starting a duplicate"
     ;;
   other)
     other="$(port_listener_pid "$API_PORT")"
     fail "api: port $API_PORT already in use by PID $other ($(cmdline_of "$other"))"
     ;;
+  unknown) fail "api: cannot establish TCP listener state on port $API_PORT";;
   free)
-    [[ -n "$api_pid" ]] && info "api: removing stale PID file ($api_pid not running)"
+    [[ -n "$api_pid" ]] && info "api: replacing stale PID file ($api_pid not running)"
     api_pid="$(start_service api "$API_PID_FILE" "$API_LOG" "$API_PORT" \
       env TRACEMAP_ENV=development TRACEMAP_DATABASE_URL="$API_DB_URL" \
       "$API_PY" -m uvicorn tracemap.main:app --host "$API_HOST" --port "$API_PORT")"
@@ -50,16 +62,23 @@ esac
 
 # ---- Web -------------------------------------------------------------------
 web_pid="$(read_pid "$WEB_PID_FILE")"
+if [[ -n "$web_pid" ]] && pid_alive "$web_pid" &&
+   ! pid_owned "$WEB_PID_FILE" "$web_pid" "vite"; then
+  fail "web: recorded PID is alive but does not match the owned process identity"
+fi
 case "$(port_state "$WEB_PORT" "$web_pid")" in
   self)
+    pid_owned "$WEB_PID_FILE" "$web_pid" "vite" ||
+      fail "web: listener does not match owned process identity"
     info "web: already running (PID $web_pid on $WEB_HOST:$WEB_PORT) — not starting a duplicate"
     ;;
   other)
     other="$(port_listener_pid "$WEB_PORT")"
     fail "web: port $WEB_PORT already in use by PID $other ($(cmdline_of "$other"))"
     ;;
+  unknown) fail "web: cannot establish TCP listener state on port $WEB_PORT";;
   free)
-    [[ -n "$web_pid" ]] && info "web: removing stale PID file ($web_pid not running)"
+    [[ -n "$web_pid" ]] && info "web: replacing stale PID file ($web_pid not running)"
     # Invoke vite directly (identical to `npm run dev`) so the recorded PID is
     # the actual server process; TRACEMAP_PROXY_TARGET keeps /api pointed at the
     # API we just verified.
