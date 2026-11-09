@@ -460,6 +460,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             tree = result["tree"]
             draft_meta = {"provider": result["provider"], "usage": result["usage"],
                           "droppedEvidenceCount": result["droppedEvidenceCount"],
+                          "retrieval": result["retrieval"],
                           "promptSha256": result["promptSha256"]}
             job_kind = "generation_llm_sync"
             response_meta = {"generationMode": "llm", "provider": result["provider"]}
