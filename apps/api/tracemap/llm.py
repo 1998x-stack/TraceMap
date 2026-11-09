@@ -86,7 +86,7 @@ class LLMError(RuleError):
 def _int_env(name: str, default: int, low: int, high: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
-    except ValueError:
+    except (ValueError, RecursionError):
         return default
     return value if low <= value <= high else default
 
@@ -366,7 +366,7 @@ def _chat(messages: list[dict], config: dict) -> tuple[str, dict]:
         raise LLMError("LLM_RESPONSE_TOO_LARGE", "模型服务响应超过 2 MiB 限制", 502)
     try:
         data = json.loads(raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         raise LLMError("LLM_INVALID_OUTPUT", "模型响应结构不可解析", 502) from None
     if not isinstance(data, dict):
         raise LLMError("LLM_INVALID_OUTPUT", "模型响应根节点必须是 JSON 对象", 502)
@@ -412,13 +412,13 @@ def extract_json_object(text: str) -> dict:
 
     try:
         parsed = json.loads(cleaned)
-    except ValueError:
+    except (ValueError, RecursionError):
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start == -1 or end <= start:
             raise LLMError("LLM_INVALID_OUTPUT", "模型输出不包含 JSON 对象", 502) from None
         try:
             parsed = json.loads(cleaned[start:end + 1])
-        except ValueError:
+        except (ValueError, RecursionError):
             raise LLMError("LLM_INVALID_OUTPUT", "模型输出不是合法 JSON", 502) from None
     if not isinstance(parsed, dict):
         raise LLMError("LLM_INVALID_OUTPUT", "模型输出根节点必须是 JSON 对象", 502)

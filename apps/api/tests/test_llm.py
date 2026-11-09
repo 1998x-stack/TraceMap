@@ -487,3 +487,10 @@ def test_draft_from_llm_only_accepts_paragraphs_sent_to_model(monkeypatch):
     assert "越界来源" not in titles
     assert "已选择来源" in titles
     assert result["droppedEvidenceCount"] == 1
+
+
+def test_extract_json_object_rejects_deeply_nested_json():
+    nested = "[" * 3000 + "0" + "]" * 3000
+    with pytest.raises(llm.LLMError) as exc:
+        llm.extract_json_object(nested)
+    assert exc.value.code == "LLM_INVALID_OUTPUT"
