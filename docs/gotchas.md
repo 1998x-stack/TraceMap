@@ -1199,7 +1199,7 @@ See `docs/UI_ACADEMIC_GENERATION_V0.4.md` for design and behavior contracts.
 
 ## GT-0026 — Shell dotenv loader overwrote explicit empty environment variables
 
-**Status:** FIX APPLIED — CI verification pending
+**Status:** RESOLVED — tested in GitHub CI (not a private-server audit)
 **Class:** Linux Deployment / Configuration consistency
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -1225,7 +1225,7 @@ the variable was set, and omitted Python's `value.strip()` behavior.
 removing matched quotes.
 **Files:** `scripts/dev-common.sh`, `apps/api/tests/test_config.py`.
 **Related tests:** `test_shell_dotenv_respects_explicit_empty_env_and_trims_values`.
-**Verification:** pending independent GitHub CI.
+**Verification:** [CI #42592992349](https://github.com/1998x-stack/TraceMap/actions/runs/42592992349) — 51 Python tests and 8 Linux deployment safety tests passed, including this cross-language precedence regression.
 **Prevention:** retain cross-language configuration parity tests; never log
 actual `TRACEMAP_LLM_API_KEY` values.
 

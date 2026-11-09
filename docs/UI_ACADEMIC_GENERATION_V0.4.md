@@ -47,7 +47,7 @@ This is necessary, but not sufficient, for factual trust: **a quote matching sou
 
 ## CI verification
 
-The first integration run [42591405795](https://github.com/1998x-stack/TraceMap/actions/runs/42591405795) passed 50 Python tests, 9 Chromium E2E cases, the strict frontend build, and the Linux lifecycle job. These are reproducible synthetic checks, **not** a deployed SaaS audit or an independent evaluation of real LLM accuracy. A dedicated progress screenshot is captured in the subsequent Chromium iteration.
+Final integration run [42592992349](https://github.com/1998x-stack/TraceMap/actions/runs/42592992349) passed **51 Python tests**, **9 Chromium E2E cases**, the strict frontend build, and the Linux lifecycle job (31 smoke checks, 8 restart checks). These are reproducible synthetic checks, **not** a deployed SaaS audit or an independent evaluation of real LLM accuracy. A dedicated progress screenshot is captured in the subsequent Chromium iteration.
 
 ## Verification checklist
 

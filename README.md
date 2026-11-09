@@ -97,8 +97,8 @@ Run `python scripts/benchmark_domain.py` for the deterministic **lexical-only** 
 
 | Area | State |
 | --- | --- |
-| Core domain + API unit/integration tests | **50 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42591405795) |
-| React Flow interface | **Build passed; Chromium E2E 9 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42591405795) |
+| Core domain + API unit/integration tests | **51 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42592992349) |
+| React Flow interface | **Build passed; Chromium E2E 9 passed** on [CI](https://github.com/1998x-stack/TraceMap/actions/runs/42592992349) |
 | Real LLM generation | **Optional, off by default** — OpenAI-compatible provider wired with server-side evidence grounding ([docs/LLM_PROVIDER.md](docs/LLM_PROVIDER.md)); extractive demo remains the default |
 | Rich AI Patch | **Not implemented**; rule-based question proposals only |
 | External authentication + privacy controls | **Not implemented**; production blocked |
