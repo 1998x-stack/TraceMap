@@ -62,6 +62,13 @@ jobs:
       - name: End-to-end source/evidence/patch smoke
         working-directory: apps/web
         run: npm run test:e2e
+      - name: Upload real Chromium UI review screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracemap-ui-v0.2-previews
+          path: apps/web/test-results/ui-*.png
+          if-no-files-found: ignore
       - name: Upload browser debug artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -2,7 +2,7 @@
 
 **Evidence-first AI research maps** · 证据可追溯的思维导图工作台
 
-> **Engineering prototype v0.1 — LOCAL DEVELOPMENT ONLY.** The code here is not a production SaaS, does **not** call an LLM, and must not be published as an authenticated service. AI generation is an explicitly labelled deterministic extractive demo.
+> **Engineering prototype v0.2 UI iteration — LOCAL DEVELOPMENT ONLY.** The code here is not a production SaaS, does **not** call an LLM, and must not be published as an authenticated service. AI generation is an explicitly labelled deterministic extractive demo.
 
 **Product specification:** [PRD](https://github.com/1998x-stack/projects/blob/main/projects/knowledge/llm-xmind/reports/prd-mvp-v1.0.md) · [Architecture](https://github.com/1998x-stack/projects/tree/main/projects/knowledge/llm-xmind/design) · [Live test plan](docs/IMPLEMENTATION_PLAN.md).
 
@@ -14,8 +14,8 @@
 - Editable tree: add, rename, move, delete, verify and attach evidence via atomic operations; 120 nodes and depth-5 structural constraints.
 - Whole-project revision and `If-Match` optimistic concurrency, scoped idempotency and undo of the latest map change.
 - Read-only generation drafts and Patch proposals (rule-based **demo**, not a model); explicit human commit; revision safety.
-- UTF-8 Markdown and JSON export; React Flow research canvas with source inspector and patch review.
-- API unit/integration tests and GitHub Actions for Python tests, frontend type/build checks, and a real Chromium end-to-end smoke test.
+- UTF-8 Markdown and JSON export; React Flow research canvas with typed semantic nodes, evidence/source inspector, clear verification states, responsive mobile onboarding, and review-before-apply patch dialogue.
+- API unit/integration tests and GitHub Actions for Python tests, frontend type/build checks, and Chromium end-to-end workflow + responsive UI checks.
 
 ## Quick start (local only)
 
@@ -68,6 +68,10 @@ TraceMap/
 ├── scripts/              # future developer tooling
 └── .github/workflows/    # automated CI checks
 ```
+
+## UI design system
+
+The v0.2 UI redesign is documented in [UI design system](docs/UI_DESIGN_SYSTEM.md). It is a real React/TypeScript implementation—not a generated mockup—and is tested with desktop/mobile Chromium screenshots in CI. The visual hierarchy keeps original evidence, user verification, and uncommitted AI/rule suggestions visibly distinct.
 
 ## Status & transparency
 

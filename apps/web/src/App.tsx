@@ -1,12 +1,35 @@
-import React,{useCallback,useEffect,useMemo,useState} from 'react';
-import { ReactFlow,Background,Controls,MiniMap,type NodeMouseHandler } from '@xyflow/react';
-import {Api,ApiError,type Project,type Source,type MapDocument,type MapNode,type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal} from './api';
+import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {
+  ReactFlow,Background,BackgroundVariant,Controls,MiniMap,
+  type NodeMouseHandler,
+} from '@xyflow/react';
+import {
+  Api,ApiError,type Project,type Source,type MapDocument,type MapNode,
+  type EvidenceRef,type Paragraph,type GenerationDraft,type PatchProposal,
+} from './api';
 import {layout,sliceCodepoints} from './layout';
+import ResearchNodeCard from './components/ResearchNode';
 
 const api=new Api('dev-alice');
+const nodeTypes={research:ResearchNodeCard};
 const typeLabels:Record<string,string>={topic:'主题',claim:'主张',evidence:'依据',counterpoint:'反例',question:'问题',decision:'决策'};
-const emptyIcon='◇';
-function getError(err:unknown){return err instanceof ApiError?`${err.code} · ${err.message}`:err instanceof Error?err.message:String(err);}
+const patchTypes=[{op:'questions',label:'追问',note:'梳理仍需验证的问题',icon:'?'},{op:'challenge',label:'质疑',note:'补充反向观察',icon:'↗'},{op:'expand',label:'扩展',note:'延伸当前分支',icon:'+'}];
+const kindSymbol:Record<string,string>={text:'T',markdown:'M',pdf:'P'};
+
+function getError(error:unknown){
+  return error instanceof ApiError?`${error.code} · ${error.message}`:error instanceof Error?error.message:String(error);
+}
+function dateLabel(value:string){
+  try {return new Date(value).toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'});}
+  catch {return value.slice(0,10);}
+}
+function nodeTrail(tree:MapDocument,selected:MapNode|null){
+  const index=new Map(tree.nodes.map(n=>[n.id,n]));
+  const trail:string[]=[];
+  let current:MapNode|undefined|null=selected;
+  while(current&&trail.length<6){trail.unshift(current.title);current=current.parentId?index.get(current.parentId):undefined;}
+  return trail;
+}
 
 export default function App(){
   const [projects,setProjects]=useState<Project[]>([]);
@@ -16,6 +39,8 @@ export default function App(){
   const [selectedId,setSelectedId]=useState<string|null>(null);
   const [paragraphs,setParagraphs]=useState<Paragraph[]>([]);
   const [openedRef,setOpenedRef]=useState<EvidenceRef|null>(null);
+  const [inspectedSourceId,setInspectedSourceId]=useState<string|null>(null);
+  const [loadingSource,setLoadingSource]=useState(false);
   const [projectTitle,setProjectTitle]=useState('');
   const [projectGoal,setProjectGoal]=useState('');
   const [sourceTitle,setSourceTitle]=useState('');
@@ -29,104 +54,297 @@ export default function App(){
   const [editTitle,setEditTitle]=useState('');
   const [newChild,setNewChild]=useState('');
   const [panel,setPanel]=useState<'detail'|'source'>('detail');
+  const [search,setSearch]=useState('');
+  const [composerOpen,setComposerOpen]=useState(true);
+  const sourceRequest=useRef(0);
+  const modalRef=useRef<HTMLDivElement|null>(null);
 
   const refreshList=useCallback(async()=>{setProjects((await api.listProjects()).items);},[]);
-  const load=useCallback(async(p:Project)=>{
-    const [latest,map,src]=await Promise.all([api.project(p.id),api.map(p.id),api.sources(p.id)]);
+  const load=useCallback(async(project:Project)=>{
+    const [latest,map,src]=await Promise.all([api.project(project.id),api.map(project.id),api.sources(project.id)]);
+    sourceRequest.current++;
     setActive(latest);setTree(map);setSources(src.items);
     setSelectedId(old=>old&&map.nodes.some(n=>n.id===old)?old:map.rootId);
-    setPatch(null);setDraft(null);setOpenedRef(null);setParagraphs([]);
+    setPatch(null);setDraft(null);setOpenedRef(null);setParagraphs([]);setInspectedSourceId(null);
+    setPanel('detail');setLoadingSource(false);
   },[]);
   useEffect(()=>{refreshList().catch(e=>setError(getError(e)));},[refreshList]);
+  useEffect(()=>{
+    if(!draft&&!patch)return;
+    const previous=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    modalRef.current?.focus();
+    const dismiss=(e:KeyboardEvent)=>{
+      if(e.key==='Escape'){setDraft(null);setPatch(null);}
+    };
+    window.addEventListener('keydown',dismiss);
+    return()=>{window.removeEventListener('keydown',dismiss);previous?.focus();};
+  },[draft,patch]);
+
   const selected=tree?.nodes.find(n=>n.id===selectedId)||null;
   const graph=useMemo(()=>tree?layout(tree):{nodes:[],edges:[]},[tree]);
-  useEffect(()=>{setEditTitle(selected?.title||'');},[selected?.id,selected?.title]);
+  const verifiedCount=tree?.nodes.filter(n=>n.verification==='verified_by_user').length??0;
+  const anchoredCount=tree?.nodes.filter(n=>n.evidenceRefs.some(r=>r.anchorStatus==='anchored')).length??0;
+  const filteredProjects=projects.filter(p=>p.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  const sourceChars=sources.reduce((sum,s)=>sum+s.extractedCharCount,0);
+  const selectedTrail=tree?nodeTrail(tree,selected):[];
+  useEffect(()=>setEditTitle(selected?.title||''),[selected?.id,selected?.title]);
+
   async function run(action:()=>Promise<unknown>,message:string){
     setBusy(true);setError('');setNotice('');
-    try{await action();setNotice(message);}catch(e){setError(getError(e));if(e instanceof ApiError&&e.status===409&&active){
-      // Do not discard user form content on conflict; only refresh canonical map.
-      const fresh=await api.map(active.id).catch(()=>null);if(fresh)setTree(fresh);
-      setNotice('版本冲突：已刷新服务器版本，请重新审阅后提交。');
-    }}finally{setBusy(false);}
+    try {await action();setNotice(message);}
+    catch(error){
+      setError(getError(error));
+      if(error instanceof ApiError&&error.status===409&&active){
+        // Keep unsent user inputs; refresh only canonical map and revision.
+        const latest=await api.map(active.id).catch(()=>null);
+        if(latest)setTree(latest);
+        setNotice('版本冲突：已刷新服务器版本，请重新审阅后再提交。');
+      }
+    }finally{setBusy(false);}
   }
-  async function reload(){if(!active)return;const p=await api.project(active.id);setActive(p);setTree(await api.map(active.id));setSources((await api.sources(active.id)).items);await refreshList();}
-  const mutate=(ops:unknown[],msg:string)=>{if(!active||!tree)return;
-    void run(async()=>{await api.edit(active.id,tree.revision,ops);await reload();},msg);
+  async function reload(){
+    if(!active)return;
+    const [nextProject,nextMap,nextSources]=await Promise.all([api.project(active.id),api.map(active.id),api.sources(active.id)]);
+    setActive(nextProject);setTree(nextMap);setSources(nextSources.items);
+    await refreshList();
+  }
+  function mutate(ops:unknown[],message:string,afterSuccess?:()=>void){
+    if(!active||!tree)return;
+    void run(async()=>{await api.edit(active.id,tree.revision,ops);await reload();afterSuccess?.();},message);
+  }
+  function inspectSource(sourceId:string,ref:EvidenceRef|null=null){
+    if(!active)return;
+    const request=++sourceRequest.current;
+    setPanel('source');setInspectedSourceId(sourceId);setOpenedRef(ref);
+    setParagraphs([]);setLoadingSource(true);
+    api.paragraphs(active.id,sourceId).then(result=>{
+      if(request===sourceRequest.current)setParagraphs(result.items);
+    }).catch(e=>{if(request===sourceRequest.current)setError(getError(e));})
+      .finally(()=>{if(request===sourceRequest.current)setLoadingSource(false);});
+  }
+  const nodeClick:NodeMouseHandler=(_e,node)=>{setSelectedId(node.id);setPanel('detail');setOpenedRef(null);};
+  const inspectedSource=sources.find(s=>s.id===inspectedSourceId);
+  const citedParagraph=openedRef?paragraphs.find(p=>p.id===openedRef.paragraphId):null;
+  const highlight=openedRef&&citedParagraph?sliceCodepoints(citedParagraph.text,openedRef.start,openedRef.end):null;
+
+  const createProject=async(event:React.FormEvent)=>{
+    event.preventDefault();if(!projectTitle.trim())return;
+    await run(async()=>{
+      const created=await api.createProject(projectTitle.trim(),projectGoal.trim());
+      setProjectTitle('');setProjectGoal('');
+      await refreshList();await load(created);
+    },'新项目已创建');
   };
-  function openRef(ref:EvidenceRef){if(!active)return;setOpenedRef(ref);setPanel('source');setParagraphs([]);
-    api.paragraphs(active.id,ref.sourceId).then(r=>setParagraphs(r.items)).catch(e=>setError(getError(e)));
-  }
-  const nodeClick:NodeMouseHandler=(_event,node)=>{setSelectedId(node.id);setPanel('detail');setOpenedRef(null);};
-  const source=openedRef?sources.find(s=>s.id===openedRef.sourceId):null;
-  const paragraph=openedRef?paragraphs.find(p=>p.id===openedRef.paragraphId):null;
-  const visualHighlight=openedRef&&paragraph?sliceCodepoints(paragraph.text,openedRef.start,openedRef.end):null;
+  const submitSource=(event:React.FormEvent)=>{
+    event.preventDefault();if(!active||!tree||!sourceText.trim())return;
+    void run(async()=>{
+      await api.addText(active.id,tree.revision,sourceTitle.trim()||'未命名材料',sourceText);
+      setSourceText('');setSourceTitle('');await reload();
+    },'资料已解析并保存');
+  };
+  const generate=()=>{
+    if(!active||!tree)return;
+    void run(async()=>{
+      const job=await api.generate(active.id,tree.revision,active.goal||active.title,sources.map(x=>x.id));
+      setDraft(await api.getDraft(active.id,job.draftId));
+    },'已生成候选草稿，请审阅后决定是否应用');
+  };
+
   return <div className="workspace">
-    <aside className="rail">
-      <div className="brand"><div className="brand-icon">T<span>.</span></div><div><strong>TraceMap</strong><small>Research OS · alpha</small></div></div>
-      <div className="rail-label">WORKSPACE <span>{projects.length} 项目</span></div>
-      <div className="project-list">{projects.map(p=><button key={p.id} className={'project-link '+(p.id===active?.id?'active':'')} onClick={()=>void run(()=>load(p),'已载入研究项目')}>
-        <span className="project-glyph">◈</span><span className="project-link-text"><strong>{p.title}</strong><small>rev {p.revision} · {new Date(p.updatedAt).toLocaleDateString()}</small></span>
-      </button>)}</div>
-      <form className="new-project" onSubmit={e=>{e.preventDefault();if(!projectTitle.trim())return;void run(async()=>{const p=await api.createProject(projectTitle.trim(),projectGoal);setProjectTitle('');setProjectGoal('');await refreshList();await load(p);},'新项目已创建');}}>
-        <label htmlFor="project-title">NEW PROJECT</label>
+    <aside className="rail" aria-label="研究项目导航">
+      <div className="brand"><div className="brand-icon" aria-hidden="true"><span className="brand-orbit">◎</span></div>
+        <div><strong>TraceMap<span className="brand-period">.</span></strong><small>EVIDENCE WORKSPACE</small></div>
+      </div>
+      <div className="rail-section"><div className="rail-label">YOUR WORKSPACE <span className="rail-count">{projects.length.toString().padStart(2,'0')}</span></div>
+        <div className="project-search-wrap"><span aria-hidden="true">⌕</span><input aria-label="搜索项目" placeholder="搜索研究项目" value={search} onChange={e=>setSearch(e.target.value)}/></div>
+        <div className="project-list">
+          {filteredProjects.length===0?<div className="rail-empty">{projects.length===0?'还没有研究项目':'未找到符合条件的项目'}</div>:
+            filteredProjects.map(p=><button key={p.id} type="button" disabled={busy}
+              className={'project-link '+(p.id===active?.id?'active':'')}
+              aria-current={p.id===active?.id?'page':undefined}
+              onClick={()=>void run(()=>load(p),'已载入研究项目')}>
+              <span className="project-glyph" aria-hidden="true">◈</span>
+              <span className="project-link-text"><strong>{p.title}</strong><small>{dateLabel(p.updatedAt)} · REV {p.revision.toString().padStart(2,'0')}</small></span>
+              {p.id===active?.id&&<span className="active-pin" aria-label="当前项目"/>}
+            </button>)}
+        </div>
+      </div>
+      <form className="new-project" onSubmit={e=>void createProject(e)}>
+        <div className="new-project-heading"><span className="tiny-plus" aria-hidden="true">+</span><label htmlFor="project-title">NEW RESEARCH</label></div>
         <input id="project-title" placeholder="项目名称" maxLength={80} value={projectTitle} onChange={e=>setProjectTitle(e.target.value)}/>
-        <input aria-label="研究目标" placeholder="研究目标（可选）" value={projectGoal} onChange={e=>setProjectGoal(e.target.value)}/>
-        <button type="submit" className="button button-outline" disabled={busy||!projectTitle.trim()}>＋ 创建研究项目</button>
+        <input aria-label="研究目标" placeholder="想要回答什么问题？（可选）" maxLength={1000} value={projectGoal} onChange={e=>setProjectGoal(e.target.value)}/>
+        <button className="button button-outline" type="submit" disabled={busy||!projectTitle.trim()}>＋ 创建研究项目</button>
       </form>
-      <div className="rail-bottom"><div className="dev-led"/>DEV MODE · dev-alice<br/><small>仅本机开发认证，禁止公网部署</small></div>
+      <div className="rail-spacer"/>
+      <div className="rail-guide"><div className="rail-guide-head"><span className="guide-mark">✳</span><span>HOW IT WORKS</span></div>
+        <p>不止于生成。<br/>让每个判断都经得起追溯。</p>
+        <div className="guide-progress"><span>资料</span><i/><span>结构</span><i/><span>核验</span></div>
+      </div>
+      <div className="rail-bottom"><div className="dev-led"/><span>DEV MODE · dev-alice</span><small>本地实验环境 · 非生产认证</small></div>
     </aside>
-    <main className="main">
-      <header className="topbar"><div className="breadcrumb">1998X <span>/</span> TraceMap <span>/</span> {active?.title||'Overview'}</div><div className="top-actions"><span className="revision">{tree?`↻ Revision ${tree.revision}`:'未选择项目'}</span>
-       {active&&tree&&<><button className="button button-quiet" onClick={()=>void run(async()=>{await api.undo(active.id,tree.revision);await reload();},'最近一次地图变更已撤销')} disabled={busy}>↶ 撤销</button>
-        <button className="button button-quiet" onClick={()=>void run(()=>api.download(active.id,'json'),'JSON 已导出')} disabled={busy}>JSON</button>
-        <button className="button button-primary" onClick={()=>void run(()=>api.download(active.id,'md'),'Markdown 已导出')} disabled={busy}>导出 Markdown ↗</button></>}</div></header>
-      <div className="dev-banner">演示阶段 · 本版本采用确定性原文摘录与规则建议，<b>没有连接真实 LLM</b>。目前只支持本机开发使用，不适合上传敏感资料。</div>
-      {(error||notice)&&<div role={error?'alert':'status'} className={'feedback '+(error?'bad':'good')}><span>{error||notice}</span><button onClick={()=>{setError('');setNotice('');}} aria-label="关闭提示">×</button></div>}
-      {!active||!tree?<div className="welcome"><div className="eyebrow">RESEARCH WORKSPACE / V0.1</div><h1>让每个结论，<br/><span>都有迹可循。</span></h1><p>上传原始资料，构建可追溯的研究地图。选择左侧的项目，或创建第一项研究。</p><div className="welcome-line"><span>01 Sources</span><span>02 Traceable nodes</span><span>03 Review changes</span></div></div>:
-      <div className="studio">
-        <section className="source-panel"><div className="panel-head"><div><div className="eyebrow">01 / MATERIALS</div><h2>研究资料 <span>{sources.length}/5</span></h2></div></div>
-          {sources.length===0?<div className="empty-sources">{emptyIcon}<p>导入资料后即可生成有原文依据的草稿导图。</p></div>:<div className="source-list">{sources.map((s,index)=><button key={s.id} className="source-item" onClick={()=>{if(!active)return;setPanel('source');setOpenedRef(null);api.paragraphs(active.id,s.id).then(x=>setParagraphs(x.items));}}>
-          <div className="source-number">{String(index+1).padStart(2,'0')}</div><div><strong>{s.title}</strong><small>{s.kind.toUpperCase()} · {s.extractedCharCount} 字符</small></div><span className="source-dot"/></button>)}</div>}
-          <form className="source-form" onSubmit={e=>{e.preventDefault();if(!sourceText.trim())return;void run(async()=>{await api.addText(active.id,tree.revision,sourceTitle.trim()||'未命名材料',sourceText);setSourceText('');setSourceTitle('');await reload();},'资料已解析并保存');}}>
-            <h3>添加一份资料</h3><input aria-label="来源标题" placeholder="来源名称" value={sourceTitle} maxLength={200} onChange={e=>setSourceTitle(e.target.value)}/>
-            <textarea aria-label="来源正文" placeholder="粘贴研究材料、竞品介绍或访谈摘要……" value={sourceText} rows={5} onChange={e=>setSourceText(e.target.value)}/>
-            <button className="button button-secondary" type="submit" disabled={busy||!sourceText.trim()||sources.length>=5}>＋ 添加文本来源</button>
-            <label className="file-upload">↑ 上传 PDF / MD / TXT<input type="file" accept=".pdf,.md,.txt" disabled={busy||sources.length>=5} onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;void run(async()=>{await api.upload(active.id,tree.revision,file);await reload();},'文件已解析并保存');}}/></label>
-            <small>每项目最多 5 份资料，总计 80,000 字符</small>
-          </form>
+
+    <main className="main" id="main">
+      <header className="topbar">
+        <div className="breadcrumb"><span>WORKSPACE</span><span className="crumb-divider">/</span>
+          <strong>{active?.title||'研究首页'}</strong></div>
+        <div className="top-actions">
+          <div className="save-indicator"><span className={`status-dot ${busy?'pulse':''}`}/><span>{busy?'正在处理…':tree?`本地已同步 · REV ${tree.revision}`:'准备开始'}</span></div>
+          {active&&tree&&<>
+            <button className="button button-quiet" disabled={busy} title="撤销上一次已确认的地图修改" onClick={()=>void run(async()=>{await api.undo(active.id,tree.revision);await reload();},'最近一次地图变更已撤销')}>↶ 撤销</button>
+            <button className="button button-quiet export-json" disabled={busy} onClick={()=>void run(()=>api.download(active.id,'json'),'JSON 已导出')}>JSON</button>
+            <button className="button button-primary export-main" disabled={busy} onClick={()=>void run(()=>api.download(active.id,'md'),'Markdown 已导出')}>导出 Markdown ↗</button>
+          </>}
+        </div>
+      </header>
+      <div className="dev-banner"><span className="dev-banner-label">DEVELOPMENT PREVIEW</span><span>规则型原文摘录演示 · <b>没有连接真实 LLM</b> · 仅限本机开发，勿上传敏感信息</span></div>
+      {(error||notice)&&<div role={error?'alert':'status'} className={'feedback '+(error?'bad':'good')}>
+        <span className="feedback-icon" aria-hidden="true">{error?'!':'✓'}</span><span>{error||notice}</span>
+        <button type="button" onClick={()=>{setError('');setNotice('');}} aria-label="关闭提示">×</button></div>}
+
+      {!active||!tree ? <section className="welcome">
+        <div className="welcome-glow" aria-hidden="true"><div className="glow-ring ring-one"/><div className="glow-ring ring-two"/><div className="glow-core">◎</div></div>
+        <div className="welcome-content">
+          <div className="eyebrow"><span className="eyebrow-line"/> RESEARCH INTELLIGENCE · V0.2</div>
+          <h1>从信息，到结构。<br/><span>从观点，到证据。</span></h1>
+          <p>将零散资料转化为可编辑、可溯源的思维导图。<br/>每一条证据有出处，每一次修改由你决定。</p>
+          <div className="welcome-instruction"><span className="welcome-arrow">↖</span><span>从左侧创建一个研究项目，即可开始。</span></div>
+          <div className="welcome-stages"><div><strong>01</strong><span>收集资料</span><small>源头可追溯</small></div><div><strong>02</strong><span>组织论点</span><small>结构一目了然</small></div><div><strong>03</strong><span>人工审阅</span><small>修改始终可控</small></div></div>
+        </div>
+      </section> : <div className="studio">
+        <section className="source-panel" aria-label="研究资料">
+          <div className="panel-head"><div><div className="eyebrow">01 / KNOWLEDGE BASE</div><h2>研究资料 <span className="panel-counter">{sources.length}/5</span></h2></div><span className="panel-head-symbol" aria-hidden="true">▤</span></div>
+          <div className="source-overview"><span>已收录资料</span><strong>{sourceChars.toLocaleString('en-US')} <small>/ 80,000 字符</small></strong>
+            <div className="quota-track"><span style={{width:`${Math.min(100,sourceChars/80000*100)}%`}}/></div></div>
+          {sources.length===0?<div className="empty-sources"><div className="empty-icon">▤</div><strong>知识库还是空的</strong><p>粘贴访谈、竞品介绍或研究文档，开始建立有出处的研究地图。</p></div>:
+            <div className="source-list">{sources.map((s,index)=><button key={s.id} type="button" disabled={busy} className={'source-item '+(s.id===inspectedSourceId?'selected':'')}
+              onClick={()=>inspectSource(s.id)}><div className="source-number">{kindSymbol[s.kind]||String(index+1).padStart(2,'0')}</div><div className="source-item-body"><strong title={s.title}>{s.title}</strong>
+              <small>{s.kind.toUpperCase()} <span>·</span> {s.extractedCharCount.toLocaleString()} 字符</small></div><span className="source-item-trailing" aria-hidden="true">↗</span></button>)}</div>}
+          <div className="source-composer">
+            <button className="composer-toggle" type="button" aria-expanded={composerOpen} onClick={()=>setComposerOpen(x=>!x)}>
+              <span><span className="composer-plus">+</span> 添加研究资料</span><span className="composer-chevron" aria-hidden="true">{composerOpen?'⌃':'⌄'}</span>
+            </button>
+            {composerOpen&&<form className="source-form" onSubmit={submitSource}>
+              <input aria-label="来源标题" placeholder="来源名称（例如：竞品访谈）" value={sourceTitle} maxLength={200} onChange={e=>setSourceTitle(e.target.value)}/>
+              <textarea aria-label="来源正文" placeholder="在这里粘贴研究资料……" value={sourceText} rows={5} onChange={e=>setSourceText(e.target.value)}/>
+              <button className="button button-secondary source-submit" type="submit" disabled={busy||!sourceText.trim()||sources.length>=5}>＋ 添加文本来源</button>
+              <label className={'file-upload '+(busy||sources.length>=5?'disabled':'')}>↥ 上传 PDF / MD / TXT
+                <input type="file" accept=".pdf,.md,.txt" disabled={busy||sources.length>=5} onChange={e=>{
+                  const file=e.target.files?.[0];e.target.value='';if(!file)return;
+                  void run(async()=>{await api.upload(active.id,tree.revision,file);await reload();},'文件已解析并保存');
+                }}/>
+              </label><small>最多 5 份文件，单份 ≤10 MB；扫描版 PDF 暂不支持。</small>
+            </form>}
+          </div>
         </section>
-        <section className="map-panel"><div className="map-head"><div><div className="eyebrow">02 / REASONING CANVAS</div><h2>{active.title}</h2></div><div className="map-actions"><span className="node-count">{tree.nodes.length} NODES</span>
-          <button className="button button-primary" onClick={()=>void run(async()=>{
-            const job=await api.generate(active.id,tree.revision,active.goal||active.title,sources.map(x=>x.id));
-            setDraft(await api.getDraft(active.id,job.draftId));},'已生成候选草稿，请在确认后应用')} disabled={busy||!sources.length}>◈ 生成原文结构草稿</button></div></div>
-          <div className="canvas-container"><ReactFlow fitView fitViewOptions={{padding:0.23}} nodes={graph.nodes} edges={graph.edges} onNodeClick={nodeClick} nodesConnectable={false} elementsSelectable>
-            <Background color="#26354d" gap={24} size={1}/><Controls showInteractive={false}/><MiniMap pannable zoomable nodeColor="#559eaf"/>
-          </ReactFlow></div><div className="canvas-footer">CLICK A NODE TO INSPECT EVIDENCE <span>证据锚点 ≠ 事实真实性</span></div>
+
+        <section className="map-panel" aria-label="研究地图画布">
+          <div className="map-head"><div className="map-project-meta"><div className="eyebrow">02 / REASONING CANVAS</div><h2 title={active.title}>{active.title}</h2><p>{active.goal||'让每个结论，都有迹可循。'}</p></div>
+            <div className="map-actions"><span className="node-count">{tree.nodes.length} NODES</span>
+              <button className="button button-primary" disabled={busy||sources.length===0} onClick={generate}>◈ 生成原文结构草稿</button></div>
+          </div>
+          <div className="map-metrics" aria-label="地图摘要">
+            <div><span className="metric-pictogram">◇</span> <strong>{tree.nodes.length}</strong> 节点</div>
+            <div><span className="metric-pictogram mint">◈</span> <strong>{anchoredCount}</strong> 有来源</div>
+            <div><span className="metric-pictogram gold">✦</span> <strong>{verifiedCount}</strong> 已核验</div>
+            <div className="metric-note">点击节点查看细节 <span>↗</span></div>
+          </div>
+          <div className="canvas-container">
+            <div className="canvas-key"><span><i className="legend-swatch legend-claim"/> 主张</span><span><i className="legend-swatch legend-evidence"/> 证据</span><span><i className="legend-swatch legend-question"/> 待探索</span></div>
+            {tree.nodes.length===1&&<div className="canvas-hint" aria-live="polite"><span>✳</span> 导入资料后，生成你的第一张研究地图。</div>}
+            <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes}
+              fitView fitViewOptions={{padding:0.24,minZoom:0.4,maxZoom:1.05}}
+              onNodeClick={nodeClick} nodesConnectable={false} nodesDraggable={false} elementsSelectable
+              minZoom={0.25} maxZoom={1.8} snapToGrid={false} proOptions={{hideAttribution:true}}>
+              <Background variant={BackgroundVariant.Dots} color="#d2d9df" gap={22} size={1.2}/>
+              <Controls showInteractive={false} position="bottom-left"/>
+              <MiniMap position="bottom-right" pannable zoomable nodeColor="#608c94" maskColor="rgba(228,235,237,.75)"/>
+            </ReactFlow>
+          </div>
+          <div className="canvas-footer"><span>TRACEABLE BY DESIGN <i/> LOCAL WORKSPACE</span><span>可定位的引用 ≠ 外部真实性证明</span></div>
         </section>
-        <section className="inspector"><div className="panel-head"><div className="eyebrow">03 / INSPECTOR</div><h2>来源与节点核验</h2></div><div className="inspector-tabs"><button className={panel==='detail'?'active':''} onClick={()=>setPanel('detail')}>节点详情</button><button className={panel==='source'?'active':''} onClick={()=>setPanel('source')}>原文位置</button></div>
-          {panel==='detail'&&selected?<div className="inspector-content"><div className="node-type">{typeLabels[selected.type]||selected.type} · {selected.origin==='ai'?'规则生成':'人工创建'}</div>
-          <label className="form-label">节点标题<input value={editTitle} onChange={e=>setEditTitle(e.target.value)} maxLength={160}/></label>
-          <button className="button button-secondary" disabled={busy||!editTitle.trim()||editTitle===selected.title} onClick={()=>mutate([{op:'rename',nodeId:selected.id,title:editTitle}],'节点标题已保存')}>保存标题</button>
-          <div className="detail-stat"><span>核验状态</span><strong className={selected.verification==='verified_by_user'?'verified':'unverified'}>{selected.verification==='verified_by_user'?'✓ 用户已核验':'◇ 待核验'}</strong></div>
-          <button className="button button-outline" disabled={busy||(!selected.evidenceRefs.some(x=>x.anchorStatus==='anchored')&&selected.verification!=='verified_by_user')} onClick={()=>mutate([{op:'verify',nodeId:selected.id,verified:selected.verification!=='verified_by_user'}],'已更新人工核验状态')}>{selected.verification==='verified_by_user'?'撤回核验':'确认已核对原文'}</button>
-          <h3>引用证据 <span>{selected.evidenceRefs.length}</span></h3>
-          {selected.evidenceRefs.length===0?<p className="muted">尚无锚定引用。本节点不能标记为已核验。</p>:selected.evidenceRefs.map((r,index)=><button className="evidence-card" key={index} disabled={r.anchorStatus!=='anchored'} onClick={()=>openRef(r)}><span>{r.anchorStatus==='anchored'?'● 可定位':'○ '+r.anchorStatus}</span><strong>“{r.exactQuote.slice(0,110)}”</strong><small>查看原文位置 →</small></button>)}
-          <div className="divider"/><h3>结构编辑</h3><label className="form-label">新增子节点<input placeholder="新的研究问题或判断" value={newChild} onChange={e=>setNewChild(e.target.value)}/></label>
-          <button className="button button-secondary" disabled={busy||!newChild.trim()} onClick={()=>{mutate([{op:'add',parentId:selected.id,node:{type:'question',title:newChild}}],'已添加子节点');setNewChild('');}}>＋ 添加子节点</button>
-          {selected.id!==tree.rootId&&<button className="button button-danger" disabled={busy} onClick={()=>{if(window.confirm('删除这个节点及其所有子节点？'))mutate([{op:'delete',nodeId:selected.id}],'节点子树已删除');}}>删除选中节点</button>}
-          <div className="divider"/><h3>局部修改建议</h3><p className="muted">当前是规则型演示，建议必须预览并手工确认。</p>
-          <div className="patch-buttons">{[{op:'questions',label:'追问'},{op:'challenge',label:'质疑'},{op:'expand',label:'扩展'}].map(a=><button key={a.op} className="button button-outline" disabled={busy} onClick={()=>void run(async()=>{const result=await api.propose(active.id,tree.revision,selected.id,a.op);setPatch(await api.getPatch(active.id,result.patchId));setAccepted(new Set());},'已生成未应用的修改提议')}>{a.label}</button>)}</div>
-          </div>:panel==='source'?<div className="inspector-content"><div className="node-type">ORIGINAL DOCUMENT · READ ONLY</div><h3>{source?.title||'来源正文'}</h3>
-          {paragraphs.length===0?<p className="muted">请选择左侧资料或点击节点证据引用以查看原文。</p>:openedRef&&paragraph&&visualHighlight?<div className="quote-context"><small>段落 {paragraph.ordinal+1} {paragraph.pageNo?`· 第 ${paragraph.pageNo} 页`:''}</small><p>{visualHighlight[0]}<mark>{visualHighlight[1]}</mark>{visualHighlight[2]}</p><div className="anchor-status">精确字符定位 · Unicode 码点</div></div>:paragraphs.map(p=><div className="quote-context" key={p.id}><small>段落 {p.ordinal+1}</small><p>{p.text}</p></div>)}
-          </div>:<div className="inspector-content muted">点击中间画布的任意节点。</div>}
+
+        <section className="inspector" aria-label="节点与原文检查器">
+          <div className="panel-head inspector-head"><div><div className="eyebrow">03 / EVIDENCE INSPECTOR</div><h2>审阅与核验</h2></div><span className="panel-head-symbol" aria-hidden="true">⌁</span></div>
+          <div className="inspector-tabs" role="tablist" aria-label="检查器视图">
+            <button type="button" role="tab" aria-selected={panel==='detail'} className={panel==='detail'?'active':''} onClick={()=>setPanel('detail')}>节点详情</button>
+            <button type="button" role="tab" aria-selected={panel==='source'} className={panel==='source'?'active':''} onClick={()=>setPanel('source')}>原文位置</button>
+          </div>
+          {panel==='detail'&&selected?<div className="inspector-content" role="tabpanel">
+            <div className="inspector-context">{selectedTrail.map((t,i)=><React.Fragment key={i}>{i>0&&<span>›</span>}<span className={i===selectedTrail.length-1?'current':''}>{t}</span></React.Fragment>)}</div>
+            <div className="node-meta"><span className="node-type">{typeLabels[selected.type]||selected.type}</span><span className="node-origin-label">{selected.origin==='ai'?'◈ 规则生成':'✎ 人工创建'}</span></div>
+            <h3 className="section-heading">节点内容</h3>
+            <label className="form-label">节点标题<input value={editTitle} onChange={e=>setEditTitle(e.target.value)} maxLength={160}/></label>
+            <button className="button button-secondary inspector-wide" disabled={busy||!editTitle.trim()||editTitle===selected.title}
+              onClick={()=>mutate([{op:'rename',nodeId:selected.id,title:editTitle}],'节点标题已保存')}>保存标题</button>
+            <div className="inspector-divider"/>
+            <h3 className="section-heading">可信度与核验</h3>
+            <div className="verification-box"><span className={`verification-symbol ${selected.verification==='verified_by_user'?'is-verified':''}`}>{selected.verification==='verified_by_user'?'✓':'?'}</span>
+              <div><strong>{selected.verification==='verified_by_user'?'用户已核验':'等待人工核验'}</strong><small>{selected.verification==='verified_by_user'?'该判断已由你确认过原文':'来源可追溯不代表内容一定真实'}</small></div></div>
+            <button className="button button-outline inspector-wide" disabled={busy||(!selected.evidenceRefs.some(x=>x.anchorStatus==='anchored')&&selected.verification!=='verified_by_user')}
+              onClick={()=>mutate([{op:'verify',nodeId:selected.id,verified:selected.verification!=='verified_by_user'}],'已更新人工核验状态')}>
+              {selected.verification==='verified_by_user'?'撤回核验':'确认已核对原文'}</button>
+            <h3 className="section-heading evidence-heading">引用证据 <span>{selected.evidenceRefs.length}</span></h3>
+            {selected.evidenceRefs.length===0?<p className="muted empty-evidence">本节点还没有引用。请添加证据后再标记为已核验。</p>:
+              selected.evidenceRefs.map((ref,index)=><button type="button" className="evidence-card" key={`${ref.paragraphId}-${index}`}
+                disabled={ref.anchorStatus!=='anchored'} onClick={()=>inspectSource(ref.sourceId,ref)}>
+                <span className={`evidence-status ${ref.anchorStatus==='anchored'?'is-anchored':''}`}>{ref.anchorStatus==='anchored'?'● 可定位原文':'○ '+ref.anchorStatus}</span>
+                <strong>“{ref.exactQuote.slice(0,110)}”</strong>
+                <small>{sources.find(s=>s.id===ref.sourceId)?.title||'来源'} <span>查看原文 →</span></small>
+              </button>)}
+            <div className="inspector-divider"/>
+            <h3 className="section-heading">组织结构</h3>
+            <label className="form-label">新增子节点<input placeholder="新的研究问题或判断" maxLength={160} value={newChild} onChange={e=>setNewChild(e.target.value)}/></label>
+            <button className="button button-secondary inspector-wide" disabled={busy||!newChild.trim()} onClick={()=>mutate([{op:'add',parentId:selected.id,node:{type:'question',title:newChild}}],'已添加子节点',()=>setNewChild(''))}>＋ 添加子节点</button>
+            {selected.id!==tree.rootId&&<button className="button button-danger inspector-wide" disabled={busy}
+              onClick={()=>{if(window.confirm('删除这个节点及其所有子节点？'))mutate([{op:'delete',nodeId:selected.id}],'节点子树已删除');}}>删除选中节点</button>}
+            <div className="inspector-divider"/>
+            <div className="ai-heading"><h3 className="section-heading">局部修改建议</h3><span>REVIEW FIRST</span></div>
+            <p className="muted">规则型演示建议。所有修改必须先审阅，再手动确认。</p>
+            <div className="patch-buttons">{patchTypes.map(item=><button type="button" key={item.op} className="button button-outline" disabled={busy}
+              aria-label={item.label} title={item.note} onClick={()=>void run(async()=>{
+                const response=await api.propose(active.id,tree.revision,selected.id,item.op);
+                setPatch(await api.getPatch(active.id,response.patchId));setAccepted(new Set());
+              },'已生成未应用的修改提议')}><span aria-hidden="true">{item.icon}</span>{item.label}</button>)}</div>
+          </div>:
+          panel==='source'?<div className="inspector-content" role="tabpanel">
+            <div className="source-readonly"><span className="status-dot"/> ORIGINAL DOCUMENT · READ ONLY</div>
+            <h3 className="source-document-title">{inspectedSource?.title||'来源正文'}</h3>
+            {loadingSource?<p className="muted">正在定位原文……</p>:
+              paragraphs.length===0?<div className="source-empty-state"><span>▤</span><p>选择左侧资料，或点击节点上的引用，即可阅读未经 AI 改写的原始段落。</p></div>:
+                openedRef&&citedParagraph&&highlight?<div className="quote-context"><small>段落 {citedParagraph.ordinal+1} {citedParagraph.pageNo?`· 第 ${citedParagraph.pageNo} 页`:''}</small>
+                  <p>{highlight[0]}<mark>{highlight[1]}</mark>{highlight[2]}</p><div className="anchor-status">✓ 原文精确字符定位 · Unicode 码点</div></div>:
+                  paragraphs.map(p=><div className="quote-context" key={p.id}><small>段落 {p.ordinal+1} {p.pageNo?`· 第 ${p.pageNo} 页`:''}</small><p>{p.text}</p></div>)}
+            <p className="source-footnote">显示的是原始资料文本，不代表来源事实已经得到独立验证。</p>
+          </div>:<div className="inspector-content muted">点击画布中的节点，查看其来源与编辑选项。</div>}
+          <div className="inspector-bottom"><span className="status-dot"/> HUMAN-IN-CONTROL WORKFLOW</div>
         </section>
       </div>}
-      {draft&&active&&tree&&<div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="draft-title"><span className="eyebrow">REVIEW BEFORE COMMIT</span><h2 id="draft-title">导图草稿预览</h2><p>规则型原文摘录生成了 <b>{draft.map.nodes.length}</b> 个节点。确认前不会更改正式地图。它不是 AI 研究结论。</p>
-      <div className="modal-items">{draft.map.nodes.slice(0,8).map(n=><div key={n.id}><span>{typeLabels[n.type]||n.type}</span><strong>{n.title.slice(0,110)}</strong></div>)}</div>
-      <footer><button className="button button-quiet" onClick={()=>setDraft(null)}>取消</button><button className="button button-primary" disabled={busy} onClick={()=>void run(async()=>{await api.commitDraft(active.id,tree.revision,draft.draftId);setDraft(null);await reload();},'已确认并保存草稿')}>确认替换地图</button></footer></div></div>}
-      {patch&&active&&tree&&<div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="patch-title"><span className="eyebrow">ATOMIC PATCH PROPOSAL</span><h2 id="patch-title">局部修改预览</h2><p>下列修改当前尚未写入地图。默认全部不选中；仅确认选中的操作。</p>
-      <div className="modal-items">{patch.proposedOps.map(op=><label key={op.opId} className="proposal-item"><input type="checkbox" checked={accepted.has(op.opId)} onChange={e=>setAccepted(old=>{const next=new Set(old);e.target.checked?next.add(op.opId):next.delete(op.opId);return next;})}/><div><span>＋ 新增 {typeLabels[op.node.type]||op.node.type}</span><strong>{op.node.title}</strong></div></label>)}</div>
-      <footer><button className="button button-quiet" onClick={()=>setPatch(null)}>放弃建议</button><button className="button button-primary" disabled={busy||accepted.size===0} onClick={()=>void run(async()=>{await api.applyPatch(active.id,tree.revision,patch.patchId,[...accepted]);setPatch(null);await reload();},'已原子应用选中的修改')}>确认应用 {accepted.size} 项</button></footer></div></div>}
+
+      {draft&&active&&tree&&<div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="draft-title" tabIndex={-1} ref={modalRef}>
+        <div className="modal-eyebrow"><span className="review-spark">✳</span> REVIEW BEFORE COMMIT <span className="modal-step">01 / 02</span></div>
+        <h2 id="draft-title">导图草稿预览</h2>
+        <p>本地规则引擎从原文提取了 <b>{draft.map.nodes.length}</b> 个节点。请确认结构是否合理；当前正式地图保持不变。</p>
+        <div className="review-caution"><span>ⓘ</span> 这是一份原文摘录草稿，不是经过核验的 AI 研究结论。</div>
+        <div className="modal-list-caption"><span>PROPOSED STRUCTURE</span><span>{draft.map.nodes.length} NODES</span></div>
+        <div className="modal-items">{draft.map.nodes.slice(0,10).map(n=><div key={n.id} className="draft-row"><span className="draft-kind">{typeLabels[n.type]||n.type}</span><strong>{n.title.slice(0,110)}</strong></div>)}</div>
+        <footer><button className="button button-quiet" onClick={()=>setDraft(null)}>取消</button><button className="button button-primary" disabled={busy}
+          onClick={()=>void run(async()=>{await api.commitDraft(active.id,tree.revision,draft.draftId);setDraft(null);await reload();},'已确认并保存草稿')}>确认替换地图</button></footer>
+      </div></div>}
+      {patch&&active&&tree&&<div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="patch-title" tabIndex={-1} ref={modalRef}>
+        <div className="modal-eyebrow"><span className="review-spark">↗</span> CONTROLLED PATCH <span className="modal-step">02 / 02</span></div>
+        <h2 id="patch-title">局部修改预览</h2>
+        <p>候选修改不会直接写入地图。逐条选择你认可的内容，只有确认后才会创建新版本。</p>
+        <div className="review-caution"><span>✓</span> 已保护：目标子树之外的节点、人工核验结论、当前已保存版本。</div>
+        <div className="modal-list-caption"><span>PROPOSED CHANGES</span><span>{accepted.size} / {patch.proposedOps.length} SELECTED</span></div>
+        <div className="modal-items">{patch.proposedOps.map(op=><label key={op.opId} className={`proposal-item ${accepted.has(op.opId)?'chosen':''}`}>
+          <input type="checkbox" checked={accepted.has(op.opId)} onChange={e=>setAccepted(old=>{
+            const next=new Set(old);e.target.checked?next.add(op.opId):next.delete(op.opId);return next;
+          })}/><div><span className="diff-add">＋ 新增 · {typeLabels[op.node.type]||op.node.type}</span><strong>{op.node.title}</strong></div>
+        </label>)}</div>
+        <footer><span className="modal-revision">BASE REV {patch.baseRevision}</span><button className="button button-quiet" onClick={()=>setPatch(null)}>放弃建议</button>
+          <button className="button button-primary" disabled={busy||accepted.size===0}
+            onClick={()=>void run(async()=>{await api.applyPatch(active.id,tree.revision,patch.patchId,[...accepted]);setPatch(null);await reload();},'已原子应用选中的修改')}>确认应用 {accepted.size} 项</button></footer>
+      </div></div>}
     </main>
   </div>;
 }

@@ -26,7 +26,7 @@ test('evidence research loop: source → draft → citation → review patch →
   await page.locator('.evidence-card').click();
   await expect(page.locator('.quote-context mark')).toHaveText('😀结论需要核验。');
 
-  await page.getByRole('button',{name:'节点详情'}).click();
+  await page.getByRole('tab',{name:'节点详情'}).click();
   await page.getByRole('button',{name:'质疑'}).click();
   const dialog=page.getByRole('dialog',{name:'局部修改预览'});
   await expect(dialog).toBeVisible();
