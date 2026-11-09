@@ -18,6 +18,7 @@ test('project rail, source library and evidence inspector collapse independently
   await page.getByRole('button',{name:'折叠项目导航'}).click();
   await expect(page.locator('.rail')).toHaveClass(/is-collapsed/);
   await expect(page.getByRole('button',{name:'打开项目：'+title})).toBeVisible();
+  await page.screenshot({path:'test-results/ui-project-rail-collapsed.png',fullPage:true});
   await page.getByRole('button',{name:'展开项目导航'}).click();
   await expect(page.locator('.rail')).not.toHaveClass(/is-collapsed/);
 
@@ -38,6 +39,7 @@ test('project rail, source library and evidence inspector collapse independently
   await expect(page.locator('.map-panel')).toBeVisible();
   await expect(page.locator('.studio')).toHaveClass(/source-collapsed/);
   await expect(page.locator('.studio')).toHaveClass(/inspector-collapsed/);
+  await page.screenshot({path:'test-results/ui-sidebars-collapsed.png',fullPage:true});
   const overflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(2);
 });
@@ -55,6 +57,7 @@ test('fullscreen focus mode works when browser Fullscreen API is unavailable and
   await expect(canvas).toHaveClass(/is-canvas-fullscreen/);
   await expect(canvas).toHaveCSS('position','fixed');
   await expect(page.getByRole('button',{name:'退出画布全屏'})).toBeVisible();
+  await page.screenshot({path:'test-results/ui-canvas-fullscreen.png',fullPage:true});
   await page.keyboard.press('Escape');
   await expect(canvas).not.toHaveClass(/is-canvas-fullscreen/);
   await expect(page.getByRole('button',{name:'全屏显示画布'})).toBeVisible();
@@ -85,6 +88,7 @@ test('mobile can collapse each sidebar and fullscreen restores the graph canvas'
   await expect(canvas).toHaveClass(/is-canvas-fullscreen/);
   await expect(page.locator('.mobile-outline')).toBeHidden();
   await expect(page.locator('.canvas-container .react-flow')).toBeVisible();
+  await page.screenshot({path:'test-results/ui-mobile-fullscreen.png',fullPage:true});
   const overflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(2);
   await page.getByRole('button',{name:'退出画布全屏'}).click();
