@@ -156,3 +156,19 @@ source-balanced token-budget retrieval, the synthetic Golden Dataset, key
 handling, error mapping, truncation and invalid-output retries, and the `/generate`
 path (the live map must not change). CI remains offline; no live-provider accuracy
 or prompt-injection success rate is claimed.
+
+
+## Phase 1 verification record
+
+Verified on GitHub Actions run 42606215058 (2026-11-09):
+- Python API suite: 69 passed, 1 existing deprecation warning.
+- Chromium browser E2E: 12 passed.
+- Deployment lifecycle: passed; the lifecycle log reported 31 checks passed and
+  the smoke run reported 8 passed, 0 failed, 0 skipped.
+- Web build: passed.
+- OpenAPI signature check: 22 operations / 19 paths.
+- Production-mode guard: passed.
+
+Live provider integration, live-model prompt-injection resistance, and factual
+accuracy evaluation: **NOT RUN**. The Golden Dataset is synthetic and verifies
+retrieval/serialization contracts only.
