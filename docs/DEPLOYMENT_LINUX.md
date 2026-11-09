@@ -347,15 +347,25 @@ independent review of `784511c` plus the `.env`/LLM work (46 backend tests,
 ## 11. Security — what this deployment is NOT
 
 - **Not production.** No external authentication, no sessions, no multi-tenancy.
-  Anyone who can reach the API holds a `dev-*` identity.
-- The API refuses any `TRACEMAP_ENV` other than `development`, and rejects
-  non-loopback clients — but a same-host reverse proxy would bypass that
-  middleware, so **never** put this behind Nginx/Caddy or publish the port.
-- Do not upload real or sensitive documents: PDF parsing is synchronous and
-  unisolated (no CPU/RAM/time limits, no malware scanning).
-- Source deletion does not guarantee erasure of quotes already copied into maps,
-  drafts, or history snapshots.
-- Do not treat the SQLite file or logs as safe for secrets.
+  Anyone who can reach the API can choose a `dev-*` identity.
+- The API refuses any `TRACEMAP_ENV` other than `development`. Its middleware
+  checks the TCP peer, local Host allowlist and rejects common forwarded/client-IP
+  headers. These are defense-in-depth checks, **not authentication**.
+- **Never put this dev API behind Nginx/Caddy/another reverse proxy**, even on
+  the same host. A proxy that strips forwarding headers and rewrites Host to
+  localhost cannot be distinguished from a local browser by application
+  middleware. Do not expose API/Vite ports or use `Bearer dev-*` on an untrusted
+  network. Use the documented SSH tunnel for remote development.
+- PDF extraction runs in a separate spawned process with CPU, address-space,
+  page-count, extracted-text and wall-clock limits. This is not a container,
+  separate OS identity, seccomp policy or malware scanner. Do not accept
+  hostile public uploads.
+- Deleting a source is now an irreversible **logical purge** from the live
+  database/API: evidence-linked map subtrees are removed, all drafts are
+  invalidated and cleared, and historical map snapshots are scrubbed. This
+  does **not** guarantee forensic erasure of SQLite WAL/free pages, filesystem
+  snapshots or external backups. Do not promise secure erasure.
+- Do not treat the SQLite file, backups or logs as safe for secrets.
 
 Implementation gaps and rollout blockers: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
 [`BACKEND_OPTIMIZATION_V0.3.md`](BACKEND_OPTIMIZATION_V0.3.md).

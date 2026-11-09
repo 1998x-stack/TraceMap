@@ -44,7 +44,9 @@ Content-Type: application/json
 - **不能**通过普通“撤销地图”恢复已删除来源：如果最新 change 是 `source_add` 或 `source_delete`，`/undo` 返回 `409 NO_UNDO_AVAILABLE`。只有 `manual`、`generation_demo`、`patch_demo` 最新 map changes 允许撤销。
 - 手工修改已核验节点标题后必须将当前核验改为 `unverified`；移动到新的父节点时，对移动子树内原核验也需谨慎撤回。撤销已提交的上一步地图变更时，恢复完整节点状态并增加新 revision（不把 revision 倒退）。
 
-**明确的数据删除限制（上线阻塞）**：当前虽然删除 Source/Paragraph，但用户已复制到地图节点、历史 `Change` 快照或生成草稿中的原文片段仍可能存在。此行为目前保留以维持版本可追溯性；**不能对外承诺删除来源就彻底清除所有衍生文本**。生产上线前必须设计明确的引用清理/历史快照删除与备份保留策略并验证。项目删除会级联清理开发数据库的相关实体，但不替代正式备份治理。
+**Phase 0 数据删除语义（2026-11-09）**：DELETE /sources/{sid} 是不可逆的 live-database logical purge：删除 Source/Paragraph；删除当前地图及所有历史快照中引用该来源的节点和其后代；清空并使项目内所有 Draft 失效；在同一事务内写入不含被清理文本的 source_delete 审计事件。这样可以阻止通过当前 API、导出、草稿或历史快照再次读取来源引用内容。
+
+**仍未解决的安全擦除边界**：SQLite WAL/free pages、文件系统快照和外部备份可能保留旧字节；无引用的手工改写/释义也无法可靠归因到某个来源。该行为不是 forensic secure erase。生产上线前仍需加密对象/数据库存储、密钥销毁、备份到期和完整衍生数据血缘策略。PDF 解析现已移至带 POSIX CPU/地址空间限制和 wall-clock 超时的子进程，但它仍与 API 使用同一 OS 用户，不是独立容器/UID/seccomp 沙箱。
 
 ## 4. 领域输入硬化
 
