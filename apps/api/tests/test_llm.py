@@ -198,12 +198,13 @@ class _FakeResponse:
 
 def test_chat_detects_truncated_output(monkeypatch):
     body = json.dumps({"choices": [{"message": {"content": '{"nodes": ['}, "finish_reason": "length"}],
-                       "usage": {}}).encode()
+                       "usage": {"total_tokens": 9}}).encode()
     monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout=None: _FakeResponse(body))
     config = {"base_url": "http://127.0.0.1:1", "model": "m", "timeout": 1, "max_tokens": 16, "api_key": "k"}
     with pytest.raises(llm.LLMError) as exc:
         llm._chat([{"role": "user", "content": "x"}], config)
     assert (exc.value.code, exc.value.status) == ("LLM_OUTPUT_TRUNCATED", 502)
+    assert exc.value.usage["total_tokens"] == 9
 
 
 def test_draft_from_llm_retries_truncation(monkeypatch):
@@ -216,13 +217,15 @@ def test_draft_from_llm_retries_truncation(monkeypatch):
     def flaky(messages, config):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise llm.LLMError("LLM_OUTPUT_TRUNCATED", "truncated", 502)
+            raise llm.LLMError("LLM_OUTPUT_TRUNCATED", "truncated", 502,
+                               usage={"total_tokens": 2})
         return canned, {"total_tokens": 3}
 
     documents = [{"sourceId": source, "title": "访谈",
                   "paragraphs": [{"id": p["id"], "ordinal": p["ordinal"], "text": p["text"]} for p in paragraphs]}]
     out = llm.draft_from_llm("目标", documents, index, {source: "访谈"}, chat=flaky)
     assert calls["n"] == 2
+    assert out["usage"]["total_tokens"] == 5
     assert len(out["tree"]["nodes"]) >= 2
 
 def test_draft_from_llm_escalates_token_budget_after_truncation(monkeypatch):

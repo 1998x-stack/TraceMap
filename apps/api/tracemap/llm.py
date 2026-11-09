@@ -77,6 +77,11 @@ SYSTEM_PROMPT = (
 class LLMError(RuleError):
     """Provider/parse failure mapped onto TraceMap's unified error contract."""
 
+    def __init__(self, code: str, message: str, status: int = 422,
+                 usage: dict | None = None):
+        super().__init__(code, message, status)
+        self.usage = usage if isinstance(usage, dict) else {}
+
 
 def _int_env(name: str, default: int, low: int, high: int) -> int:
     try:
@@ -384,6 +389,7 @@ def _chat(messages: list[dict], config: dict) -> tuple[str, dict]:
             "LLM_OUTPUT_TRUNCATED",
             "模型未返回完整内容（可能是推理占满 Token 预算），请精简资料或稍后重试",
             502,
+            usage=usage,
         )
     if not isinstance(content, str) or not content.strip():
         raise LLMError("LLM_INVALID_OUTPUT", "模型未返回可用的结构化内容", 502)
@@ -567,6 +573,7 @@ def draft_from_llm(goal: str, documents: list[dict], paragraphs: dict, source_ti
                 raise LLMError("LLM_INVALID_OUTPUT", "模型候选节点均无有效证据", 502)
             break
         except LLMError as exc:
+            _merge_usage(total_usage, exc.usage)
             if exc.code not in {"LLM_OUTPUT_TRUNCATED", "LLM_INVALID_OUTPUT"}:
                 raise
             last_error = exc
