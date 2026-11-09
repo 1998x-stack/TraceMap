@@ -270,3 +270,60 @@ def test_oversized_if_match_revision_is_rejected_without_500(client, headers, cr
 
     # Project and map are unchanged by all of the above.
     assert client.get(f'/api/v1/projects/{pid}', headers=headers).json()['revision'] == 1
+
+
+def test_storage_error_status_mapping_is_pure_and_safe():
+    """GT-0020: unexpected/storage errors map to a structured, non-leaking body."""
+    import sqlalchemy
+    from sqlalchemy.exc import OperationalError, SQLAlchemyError
+    from tracemap.main import storage_error_status
+
+    locked = OperationalError("SELECT 1", {}, Exception("database is locked"))
+    status, code, message, retryable = storage_error_status(locked)
+    assert (status, code, retryable) == (503, "STORAGE_BUSY", True)
+    assert "locked" not in message.lower() and "select" not in message.lower()
+
+    status, code, _message, retryable = storage_error_status(SQLAlchemyError("driver blew up"))
+    assert (status, code, retryable) == (500, "STORAGE_ERROR", False)
+
+    status, code, _message, retryable = storage_error_status(ValueError("secret detail"))
+    assert (status, code, retryable) == (500, "INTERNAL_ERROR", False)
+
+
+def test_locked_database_returns_structured_retryable_error(tmp_path, monkeypatch):
+    import sqlite3
+    from fastapi.testclient import TestClient
+    from tracemap.main import create_app
+
+    monkeypatch.setenv("TRACEMAP_SQLITE_TIMEOUT", "0")  # fail fast instead of waiting 20 s
+    app = create_app(f"sqlite:///{tmp_path / 'locked.db'}")
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            headers = {"Authorization": "Bearer dev-alice"}
+            pid = client.post("/api/v1/projects", json={"title": "lock", "goal": "g"},
+                              headers={**headers, "Idempotency-Key": "lock-create-0001"}).json()["id"]
+            root = client.get(f"/api/v1/projects/{pid}/map", headers=headers).json()["rootId"]
+
+            lock = sqlite3.connect(tmp_path / "locked.db", timeout=0)
+            lock.execute("BEGIN EXCLUSIVE")
+            try:
+                response = client.post(f"/api/v1/projects/{pid}/nodes/ops",
+                    json={"operations": [{"op": "rename", "nodeId": root, "title": "x"}]},
+                    headers={**headers, "If-Match": '"rev-0"', "Idempotency-Key": "lock-op-0001"})
+                assert response.status_code == 503, response.text
+                body = response.json()
+                assert body["error"]["code"] == "STORAGE_BUSY"
+                assert body["error"]["retryable"] is True
+                assert "locked" not in response.text.lower()
+                assert "sqlite" not in response.text.lower()
+            finally:
+                lock.rollback()
+                lock.close()
+
+            # The database must be usable again once the lock is released.
+            ok = client.post(f"/api/v1/projects/{pid}/nodes/ops",
+                json={"operations": [{"op": "rename", "nodeId": root, "title": "y"}]},
+                headers={**headers, "If-Match": '"rev-0"', "Idempotency-Key": "lock-op-0002"})
+            assert ok.status_code == 200, ok.text
+    finally:
+        app.state.engine.dispose()

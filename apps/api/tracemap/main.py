@@ -9,6 +9,7 @@ from copy import deepcopy
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import uuid
@@ -21,6 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update, delete, func
+from sqlalchemy.exc import SQLAlchemyError, OperationalError
 
 from .db import Base, Project, Source, Paragraph, Change, Draft, Idempotency, Job, engine_for, session_factory, now
 from .core import (RuleError, uid, sha, canon, split_paragraphs, root_map,
@@ -32,6 +34,21 @@ from .core import (RuleError, uid, sha, canon, split_paragraphs, root_map,
 # signed-64-bit limit (the CAS update writes expected + 1) and at the JavaScript
 # Number.MAX_SAFE_INTEGER boundary so a round-tripped revision is lossless.
 MAX_REVISION = 2 ** 53 - 1
+
+LOGGER = logging.getLogger("tracemap")
+
+
+def storage_error_status(exc: BaseException) -> tuple[int, str, str, bool]:
+    """Map an unexpected/storage exception to the unified error contract.
+
+    A pure function so it can be unit-tested without a live database. The
+    client never receives driver text, SQL, or tracebacks (see GT-0020).
+    """
+    if isinstance(exc, OperationalError) and "locked" in str(exc).lower():
+        return 503, "STORAGE_BUSY", "本地存储暂时繁忙，请稍后重试", True
+    if isinstance(exc, SQLAlchemyError):
+        return 500, "STORAGE_ERROR", "本地存储发生错误", False
+    return 500, "INTERNAL_ERROR", "服务器内部错误", False
 
 
 class NewProject(BaseModel):
@@ -114,6 +131,20 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return JSONResponse(status_code=422, content={"error": {
             "code": "SCHEMA_INVALID", "message": "请求字段格式无效", "retryable": False,
             "details": [{"field": ".".join(str(p) for p in e.get("loc", [])), "type": e.get("type", "invalid")} for e in exc.errors()]}})
+
+    @app.exception_handler(SQLAlchemyError)
+    async def _storage_error(_request: Request, exc: SQLAlchemyError):
+        status, code, message, retryable = storage_error_status(exc)
+        LOGGER.error("storage error: %s", type(exc).__name__, exc_info=exc)
+        return JSONResponse(status_code=status, content={"error": {
+            "code": code, "message": message, "retryable": retryable}})
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error(_request: Request, exc: Exception):
+        status, code, message, retryable = storage_error_status(exc)
+        LOGGER.error("unhandled error: %s", type(exc).__name__, exc_info=exc)
+        return JSONResponse(status_code=status, content={"error": {
+            "code": code, "message": message, "retryable": retryable}})
 
     def owner(authorization: str | None) -> str:
         if not authorization or not re.fullmatch(r"Bearer dev-[a-z0-9][a-z0-9_-]{0,40}", authorization):
