@@ -31,7 +31,7 @@
 | LLM output still truncated after automatic retry | [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |
 | LLM candidate has no valid evidence, but still appears in the map | [GT-0024](#gt-0024--model-claims-with-invalid-or-out-of-scope-anchors-survived) |
 | Candidate generation takes tens of seconds with no visible explanation | [GT-0025](#gt-0025--synchronous-generation-looked-frozen) |
-| `502 LLM_OUTPUT_TRUNCATED` after retry, or malformed model JSON | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) and [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |\n| Source deleted but quote remains in a map, draft or historical snapshot | [GT-0028](#gt-0028--source-delete-left-derived-evidence-in-live-records) |\n| PDF upload blocks API or consumes unbounded parser resources | [GT-0029](#gt-0029--pdf-extraction-ran-inside-the-api-process) |\n| Local API accepts forwarded headers or an external Host | [GT-0030](#gt-0030--dev-api-trusted-loopback-proxy-metadata) |
+| `502 LLM_OUTPUT_TRUNCATED` after retry, or malformed model JSON | [GT-0022](#gt-0022--reasoning-model-truncation-broke-llm-generation-intermittently) and [GT-0027](#gt-0027--truncation-retry-reused-the-same-token-budget) |\n| Source deleted but quote remains in a map, draft or historical snapshot | [GT-0028](#gt-0028--source-delete-left-derived-evidence-in-live-records) |\n| PDF upload blocks API or consumes unbounded parser resources | [GT-0029](#gt-0029--pdf-extraction-ran-inside-the-api-process) |\n| Local API accepts forwarded headers or an external Host | [GT-0030](#gt-0030--dev-api-trusted-loopback-proxy-metadata) |\n| dev-stop reports failure after the service port is released but the PID is reused | [GT-0031](#gt-0031--dev-stop-mistook-pid-reuse-for-a-live-service) |
 | Markdown export hides node type / notes / verification | [GT-0023](#gt-0023--markdown-export-does-not-convey-node-type-notes-or-verification) |
 | `scripts/dev-start.sh: No such file or directory` after following the guide | [GT-0019](#gt-0019--deployment-guide-left-the-shell-in-appsweb) |
 | HTTP **500** `Internal Server Error` (non-JSON) on a locked SQLite / after ~20 s | [GT-0020](#gt-0020--locked-sqlite-returned-an-opaque-non-json-500) |
@@ -1406,3 +1406,32 @@ use Bearer dev-* as production authentication.
 A real externally reachable deployment requires managed authentication,
 revocable sessions, trusted proxy configuration and a separate production
 security review.
+
+
+---
+
+## GT-0031 — dev-stop mistook PID reuse for a live service
+
+**Status:** RESOLVED — shell regression tests added; verify Linux lifecycle CI
+**Class:** Local deployment lifecycle / reliability
+**Severity:** P1
+**First seen:** 2026-11-09
+**Environment:** Linux dev-stop.sh during a rapid stop/restart cycle.
+
+**Symptoms:** after SIGTERM, the original API process exited and released its
+listener, but the OS reused its PID before the stop loop's final identity check.
+The script correctly refused to SIGKILL the new process, but incorrectly
+reported the original service stop as failed even though the service port was
+already free.
+
+**Expected:** never signal a PID whose start-time or command identity changed.
+If identity changes after SIGTERM and the expected service port is free, treat
+the original service as stopped, remove only the stale PID record and return
+success. If the port is still occupied or its state is unknown, fail closed.
+
+**Fix:** stop_service now checks the service port when PID identity changes.
+It removes the stale PID record only after observing the port free; otherwise
+it preserves the PID file and refuses SIGKILL.
+
+**Prevention:** retain both shell tests: identity changed + port free succeeds
+without SIGKILL; identity changed + port occupied remains a hard failure.

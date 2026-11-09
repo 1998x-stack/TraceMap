@@ -109,6 +109,50 @@ class DeploymentSafetyTests(unittest.TestCase):
             else:
                 os.environ["TRACEMAP_API_PORT"] = previous
 
+    def test_stop_treats_pid_reuse_as_success_only_after_listener_release(self):
+        with tempfile.TemporaryDirectory(prefix="tracemap-stop-reuse-") as tmp:
+            pidfile = Path(tmp) / "api.pid"
+            kill_log = Path(tmp) / "kill.log"
+            pidfile.write_text("4242 100\n")
+            script = f"""
+            source "{COMMON}"
+            calls=0
+            pid_alive() {{ return 0; }}
+            pid_owned() {{ calls=$((calls + 1)); [[ "$calls" -eq 1 ]]; }}
+            cmdline_of() {{ printf 'original api process'; }}
+            port_state() {{ printf 'free'; }}
+            kill() {{ printf '%s\\n' "$*" >> "{kill_log}"; }}
+            stop_service api "{pidfile}" 44976 "tracemap.main:app" 0
+            """
+            result = run(["bash", "-c", script])
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("listener released", result.stderr)
+            self.assertFalse(pidfile.exists())
+            # Only the initial graceful SIGTERM is sent. No SIGKILL may target
+            # a PID whose identity changed after the original listener exited.
+            self.assertEqual(kill_log.read_text().strip(), "4242")
+
+    def test_stop_refuses_pid_reuse_when_listener_is_still_occupied(self):
+        with tempfile.TemporaryDirectory(prefix="tracemap-stop-reuse-busy-") as tmp:
+            pidfile = Path(tmp) / "api.pid"
+            kill_log = Path(tmp) / "kill.log"
+            pidfile.write_text("4243 101\n")
+            script = f"""
+            source "{COMMON}"
+            calls=0
+            pid_alive() {{ return 0; }}
+            pid_owned() {{ calls=$((calls + 1)); [[ "$calls" -eq 1 ]]; }}
+            cmdline_of() {{ printf 'original api process'; }}
+            port_state() {{ printf 'other'; }}
+            kill() {{ printf '%s\\n' "$*" >> "{kill_log}"; }}
+            stop_service api "{pidfile}" 44977 "tracemap.main:app" 0
+            """
+            result = run(["bash", "-c", script])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("listener remains; refusing SIGKILL", result.stderr)
+            self.assertTrue(pidfile.exists())
+            self.assertEqual(kill_log.read_text().strip(), "4243")
+
     def test_stop_refuses_to_kill_foreign_process(self):
         if not shutil.which("ss") or not shutil.which("flock"):
             self.skipTest("Linux ss/flock not installed")
