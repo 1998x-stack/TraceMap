@@ -1,0 +1,29 @@
+# TraceMap implementation gates
+
+Status key: **PASS** = tested; **PARTIAL** = prototype behavior, remaining work; **NOT STARTED** = placeholder only.
+
+| Gate | Scope | Evidence / stage |
+| --- | --- | --- |
+| G0 — structure + contracts | Monorepo structure, ADR, dev README, CI, deterministic validators | Local pytest + remote CI: pending until GitHub run |
+| G1 — sources | Project CRUD; dev-only identity isolation; SQLite persistence; inline text/MD/PDF; stable paragraph anchors; quotas | Local API tests; source parsing is synchronous and not isolated (PARTIAL) |
+| G2 — map | React Flow canvas; manual add/rename/delete/verify; revision control; idempotency; rollback; JSON/MD export | Local API tests; frontend build via CI; move/reorder UI and full history screen pending (PARTIAL) |
+| G3 — LLM generation | Provider adapter; cost budget; untrusted document handling; schema validation; durable generation jobs | NOT STARTED — extractive demonstration draft only, clearly labelled |
+| G4 — AI Patch | Real LLM operations; per-op Diff dependencies; TTL; protected edits; 409; atomic apply | PARTIAL — rule-based question proposals with opt-in apply; no LLM or real condense |
+| G5 — production/research | Secure identity; PostgreSQL migration; private S3; worker isolation; user study; Xmind import matrix | NOT STARTED; explicit production guard prevents accidental public launch |
+
+## Test exit criteria for the current prototype
+
+1. `python -m pytest -q apps/api/tests`: every unit and integration test must pass.
+2. `npm run build` in `apps/web`: strict TypeScript + Vite bundle build must pass on CI.
+3. Confirm cross-user IDOR returns 404; forged anchor returns 422; stale writes return 409; mock draft/patch cannot change map without confirmation.
+4. Verify README links and all source files exist on GitHub; CI green on the final head commit.
+5. Future gates are **not marked complete** on the strength of scaffold code alone.
+
+## Next engineering changes in priority order
+
+- G1.1 replace dev token with real managed authentication + revocable sessions.
+- G1.2 run PDF extraction in an isolated worker, store original object privately and implement cleanup policies.
+- G2.1 add production PostgreSQL schema migrations and concurrency tests; expose operation audit/history and view preferences.
+- G3.1 implement provider adapter with schema, budget, source scoping, injection-resistance and golden-set accuracy tests.
+- G4.1 implement complete Patch operation set, independent Diff and safe rebase rules.
+- G5.1 perform real Xmind Markdown import matrix and accessibility / performance benchmarks.
