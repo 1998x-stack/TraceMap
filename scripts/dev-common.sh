@@ -51,7 +51,13 @@ info() { printf '%s [tracemap] %s\n' "$(TS)" "$*"; }
 warn() { printf '%s [tracemap] WARN %s\n' "$(TS)" "$*" >&2; }
 fail() { printf '%s [tracemap] ERROR %s\n' "$(TS)" "$*" >&2; exit 1; }
 
-ensure_dirs() { mkdir -p -- "$PID_DIR" "$LOG_DIR" "$DATA_DIR"; }
+ensure_dirs() {
+  mkdir -p -- "$PID_DIR" "$LOG_DIR" "$DATA_DIR"
+  # A previous deployment may have created the directories under umask 022.
+  # Protect existing local SQLite and log files from other unprivileged users.
+  chmod 700 -- "$RUNTIME_DIR" "$PID_DIR" "$LOG_DIR" "$DATA_DIR" ||
+    fail "Cannot make TraceMap runtime directories private (0700)"
+}
 
 # Fail closed: no host override may make the insecure development stack public.
 validate_dev_configuration() {

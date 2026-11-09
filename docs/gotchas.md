@@ -62,12 +62,12 @@ Verified commits:
 - `REVISION_CONFLICT` (409) after editing in two places → expected CAS behaviour, reload and retry
 - `NO_UNDO_AVAILABLE` (409) → last change was `source_add`/`source_delete`; deletion is irreversible by design
 
-## 4. Resolved issues
+## 4. Resolved or mitigated issues
 
 | ID | Title | Class | Sev |
 | --- | --- | --- | --- |
 | GT-0001 | Playwright web server assumed a global `uvicorn`/`python` | Deployment/Test | P1 |
-| GT-0002 | Default SQLite path is CWD-relative; import creates a stray DB | Deployment/Database | P1 |
+| GT-0002 | Default SQLite path is CWD-relative; import still creates a stray DB (**mitigated**) | Deployment/Database | P1 |
 | GT-0003 | No frontend lockfile → dependency drift | Environment | P2 |
 | GT-0004 | E2E reused dev servers and a shared database file | Test | P1 |
 | GT-0005 | Oversized `If-Match` revision → 500 `OverflowError` | Backend/Security | P1 |
@@ -86,9 +86,11 @@ Verified commits:
 ## 5.1 Deployment review follow-up (PR #6)
 
 The following faults were identified by a **source-level safety review** of PR #6,
-not by inspecting private server logs. Fixes are proposed in this same branch;
-the GitHub `deployment-lifecycle` job is the independent verification gate.
-Until it passes, treat each status as **FIX APPLIED / CI PENDING**, not RESOLVED.
+not by inspecting private server logs. The follow-up security and lifecycle
+checks passed in [GitHub Actions #42575575595](https://github.com/1998x-stack/TraceMap/actions/runs/42575575595)
+on GitHub's Ubuntu runner. This validates the repository in CI, **not**
+the private Linux server, its firewall, or a full independent cold-start.
+GT-0017 remains open until another agent follows the new setup guide end to end.
 
 | ID | Severity | Symptom / root issue |
 | --- | --- | --- |
@@ -191,7 +193,7 @@ same way a developer would. Prefer `cwd`/`env` over `bash -lc "cd ..."`.
 
 ## GT-0002 — Default SQLite path is CWD-relative + import side effect creates a stray DB
 
-**Status:** RESOLVED
+**Status:** MITIGATED — script-controlled paths are safe; import-time side effect remains
 **Class:** Deployment / Database
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -632,7 +634,7 @@ entry and never remove the failing test that guarded it.*
 
 ## GT-0012 — Host override could expose development services
 
-**Status:** FIX APPLIED / CI PENDING
+**Status:** RESOLVED — verified by GitHub CI (not a production or private-server certification)
 **Class:** Security / Deployment
 **Severity:** P0
 **First seen:** 2026-11-09
@@ -654,13 +656,13 @@ touching runtime files. Vite also rejects non-loopback proxy targets.
 **Files:** scripts/dev-common.sh, scripts/dev-start.sh, apps/web/vite.config.ts.
 **Related tests:** scripts/tests/test_dev_safety.py (host and port matrix);
 GitHub deployment-lifecycle CI.
-**Verification:** pending branch CI. Do not mark verified without run URL.
+**Verification:** [CI #42575575595](https://github.com/1998x-stack/TraceMap/actions/runs/42575575595) — four jobs passed; regression and Linux lifecycle tests completed. Do not mark verified without run URL.
 **Prevention:** fail-closed default and regression assertions.
 **Links:** PR #6.
 
 ## GT-0013 — PID reuse and opaque listener ownership
 
-**Status:** FIX APPLIED / CI PENDING
+**Status:** RESOLVED — verified by GitHub CI (not a production or private-server certification)
 **Class:** Deployment / Process management
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -685,14 +687,14 @@ legacy services manually before upgrading.
 **Files:** scripts/dev-common.sh, scripts/dev-start.sh, scripts/dev-stop.sh,
 scripts/dev-status.sh.
 **Related tests:** scripts/tests/test_dev_safety.py.
-**Verification:** pending branch CI.
+**Verification:** [CI #42575575595](https://github.com/1998x-stack/TraceMap/actions/runs/42575575595) — four jobs passed; regression and Linux lifecycle tests completed.
 **Prevention:** preserve process-generation checks and never assume PID-less
 `ss` output means a free port.
 **Links:** PR #6.
 
 ## GT-0014 — Live smoke skipped absent services
 
-**Status:** FIX APPLIED / CI PENDING
+**Status:** RESOLVED — verified by GitHub CI (not a production or private-server certification)
 **Class:** Test / Deployment
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -712,13 +714,13 @@ and web as missing.
 loopback instance; a standalone `--live-only` regression path is supported.
 **Files:** scripts/smoke-test.sh.
 **Related tests:** scripts/tests/test_dev_safety.py and CI lifecycle job.
-**Verification:** pending branch CI.
+**Verification:** [CI #42575575595](https://github.com/1998x-stack/TraceMap/actions/runs/42575575595) — four jobs passed; regression and Linux lifecycle tests completed.
 **Prevention:** exit nonzero for FAIL or required SKIP.
 **Links:** PR #6.
 
 ## GT-0015 — E2E server reuse and database override
 
-**Status:** FIX APPLIED / CI PENDING
+**Status:** RESOLVED — verified by GitHub CI (not a production or private-server certification)
 **Class:** Test / Data isolation
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -739,13 +741,13 @@ used, and a pre-existing E2E listener makes the run fail.
 validate distinct test ports; clean owned temp directory when runner exits.
 **Files:** apps/web/playwright.config.ts.
 **Related tests:** browser-e2e CI, test harness startup.
-**Verification:** pending branch CI.
+**Verification:** [CI #42575575595](https://github.com/1998x-stack/TraceMap/actions/runs/42575575595) — four jobs passed; regression and Linux lifecycle tests completed.
 **Prevention:** never relax the isolation guards to make a failing test pass.
 **Links:** PR #6.
 
 ## GT-0016 — Restart test inherited database URL
 
-**Status:** FIX APPLIED / CI PENDING
+**Status:** RESOLVED — verified by GitHub CI (not a production or private-server certification)
 **Class:** Database / Test
 **Severity:** P1
 **First seen:** 2026-11-09
@@ -764,14 +766,13 @@ runtime, export its URL, invoke restart test. It must not change the sentinel.
 ports, and use exit traps for cleanup.
 **Files:** scripts/smoke-test.sh.
 **Related tests:** CI deployment-lifecycle restart and persistence cycle.
-**Verification:** pending branch CI; the sentinel test remains a suggested
-future addition if not present in CI.
+**Verification:** [CI #42575575595](https://github.com/1998x-stack/TraceMap/actions/runs/42575575595) — 8 restart assertions passed; the inherited-db sentinel SHA-256 was unchanged.
 **Prevention:** never run destructive tests with unreviewed env overrides.
 **Links:** PR #6.
 
 ## GT-0017 — Relative commands and unscoped /tmp cleanup
 
-**Status:** FIX APPLIED / CI PENDING
+**Status:** OPEN — commands corrected, independent clean-host walkthrough still pending
 **Class:** Documentation / Agent reliability
 **Severity:** P2
 **First seen:** 2026-11-09
@@ -793,6 +794,6 @@ and link to unique temp-directory ownership.
 **Files:** AGENTS.md, docs/DEPLOYMENT_LINUX.md.
 **Related tests:** independent cold-start walkthrough required for final
 server acceptance.
-**Verification:** pending cold-start validation.
+**Verification:** documentation paths were corrected; independent fresh-agent reproduction is not yet verified.
 **Prevention:** run documentation blocks as scripts in CI when practical.
 **Links:** PR #6.

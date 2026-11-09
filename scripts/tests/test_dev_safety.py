@@ -42,6 +42,18 @@ class DeploymentSafetyTests(unittest.TestCase):
                     self.assertIn(message, result.stderr)
                     self.assertFalse((Path(tmp) / "data" / "tracemap-dev.db").exists())
 
+    def test_existing_runtime_directory_permissions_are_restricted(self):
+        import stat
+        with tempfile.TemporaryDirectory(prefix="tracemap-permissions-") as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            runtime.chmod(0o755)
+            r = run(["bash", "-c", f'source "{COMMON}"; validate_dev_configuration; ensure_dirs'],
+                    TRACEMAP_RUNTIME_DIR=str(runtime))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            for folder in [runtime, runtime / "data", runtime / "pids", runtime / "logs"]:
+                self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700, str(folder))
+
     def test_runtime_directory_must_be_absolute(self):
         r = run(["bash", str(START)], TRACEMAP_RUNTIME_DIR="relative-runtime")
         self.assertNotEqual(r.returncode, 0)

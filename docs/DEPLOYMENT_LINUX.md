@@ -66,7 +66,10 @@ npx playwright install chromium
 
 Runtime state (PID files, logs, SQLite) is kept **outside** the repo by default,
 under `$TRACEMAP_RUNTIME_DIR` (`~/tracemap-runtime`), so checkouts and
-`git clean` cannot destroy research data.
+`git clean` cannot destroy research data. Lifecycle scripts use `umask 077`
+and restrict existing runtime subdirectories to mode 0700. This is a deliberate
+access-control change for any older, shared runtime folder; review such folders
+before upgrading.
 
 ## 3. Start, status, stop, restart
 
